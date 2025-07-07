@@ -77,14 +77,14 @@ public:
         /* Maximum socket lifetime in minutes before forced closure (defaults to disabled) */
         unsigned short maxLifetime = 0;
         MoveOnlyFunction<void(HttpResponse<SSL> *, HttpRequest *, struct us_socket_context_t *)> upgrade = nullptr;
-        MoveOnlyFunction<void(WebSocket<SSL, true, UserData> *)> open = nullptr;
-        MoveOnlyFunction<void(WebSocket<SSL, true, UserData> *, std::string_view, OpCode)> message = nullptr;
-        MoveOnlyFunction<void(WebSocket<SSL, true, UserData> *, std::string_view, OpCode)> dropped = nullptr;
-        MoveOnlyFunction<void(WebSocket<SSL, true, UserData> *)> drain = nullptr;
-        MoveOnlyFunction<void(WebSocket<SSL, true, UserData> *, std::string_view)> ping = nullptr;
-        MoveOnlyFunction<void(WebSocket<SSL, true, UserData> *, std::string_view)> pong = nullptr;
-        MoveOnlyFunction<void(WebSocket<SSL, true, UserData> *, std::string_view, int, int)> subscription = nullptr;
-        MoveOnlyFunction<void(WebSocket<SSL, true, UserData> *, int, std::string_view)> close = nullptr;
+        MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *)> open = nullptr;
+        MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view, OpCode)> message = nullptr;
+        MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view, OpCode)> dropped = nullptr;
+        MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *)> drain = nullptr;
+        MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view)> ping = nullptr;
+        MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view)> pong = nullptr;
+        MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view, int, int)> subscription = nullptr;
+        MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, int, std::string_view)> close = nullptr;
     };
 
     template <typename UserData>
@@ -115,7 +115,7 @@ public:
             std::terminate();
         }
 
-        auto *webSocketContext = WebSocketContext<SSL, true, UserData>::create(Loop::get(), (us_socket_context_t *) httpContext, nullptr);
+        auto *webSocketContext = WebSocketContext<SSL, false, UserData>::create(Loop::get(), (us_socket_context_t *) httpContext, nullptr);
 
         /* Quick fix to disable any compression if set */
 #ifdef UWS_NO_ZLIB
@@ -205,13 +205,12 @@ public:
                 behavior.upgrade(res, req, (struct us_socket_context_t *) webSocketContext);
             } else {
                 /* Default handler upgrades to WebSocket */
-                res->template upgrade<UserData>(
+                res->template upgradeClient<UserData>(
                     {}, 
                     {}, 
                     req->getHeader("sec-websocket-protocol"), 
                     req->getHeader("sec-websocket-extensions"), 
-                    (struct us_socket_context_t *) webSocketContext,
-                    true
+                    (struct us_socket_context_t *) webSocketContext
                 );
             }
 

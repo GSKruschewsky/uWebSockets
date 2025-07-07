@@ -54,6 +54,7 @@ enum {
     SERVER
 };
 
+/* I belive this sould not be templated, always used with "isServer" set to true. */
 // 24 bytes perfectly
 template <bool isServer>
 struct WebSocketState {
@@ -356,7 +357,7 @@ protected:
     }
 
     template <unsigned int MESSAGE_HEADER, typename T>
-    static inline bool consumeMessage(T payLength, char *&src, unsigned int &length, WebSocketState<isServer> *wState, void *user) {
+    static inline bool consumeMessage(T payLength, char *&src, unsigned int &length, WebSocketState<true> *wState, void *user) {
         if (getOpCode(src)) {
             if (wState->state.opStack == 1 || (!wState->state.lastFin && getOpCode(src) < 2)) {
                 Impl::forceClose(wState, user, ERR_PROTOCOL);
@@ -421,7 +422,7 @@ protected:
         }
     }
 
-    static inline bool consumeContinuation(char *&src, unsigned int &length, WebSocketState<isServer> *wState, void *user) {
+    static inline bool consumeContinuation(char *&src, unsigned int &length, WebSocketState<true> *wState, void *user) {
         if (wState->remainingBytes <= length) {
             if (isServer) {
                 unsigned int n = wState->remainingBytes >> 2;
@@ -474,7 +475,7 @@ public:
 
     }
 
-    static inline void consume(char *src, unsigned int length, WebSocketState<isServer> *wState, void *user) {
+    static inline void consume(char *src, unsigned int length, WebSocketState<true> *wState, void *user) {
         if (wState->state.spillLength) {
             src -= wState->state.spillLength;
             length += wState->state.spillLength;

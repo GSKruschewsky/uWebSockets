@@ -111,7 +111,7 @@ public:
     /* Send or buffer a WebSocket frame, compressed or not. Returns BACKPRESSURE on increased user space backpressure,
      * DROPPED on dropped message (due to backpressure) or SUCCCESS if you are free to send even more now. */
     SendStatus send(std::string_view message, OpCode opCode = OpCode::BINARY, int compress = false, bool fin = true) {
-        WebSocketContextData<SSL, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL,
+        WebSocketContextData<SSL, isServer, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, isServer, USERDATA> *) us_socket_context_ext(SSL,
             (us_socket_context_t *) us_socket_context(SSL, (us_socket_t *) this)
         );
 
@@ -243,7 +243,7 @@ public:
             }
         }
 
-        WebSocketContextData<SSL, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL,
+        WebSocketContextData<SSL, isServer, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, isServer, USERDATA> *) us_socket_context_ext(SSL,
             (us_socket_context_t *) us_socket_context(SSL, (us_socket_t *) this)
         );
 
@@ -287,7 +287,7 @@ public:
 
     /* Subscribe to a topic according to MQTT rules and syntax. Returns success */
     bool subscribe(std::string_view topic, bool = false) {
-        WebSocketContextData<SSL, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL,
+        WebSocketContextData<SSL, isServer, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, isServer, USERDATA> *) us_socket_context_ext(SSL,
             (us_socket_context_t *) us_socket_context(SSL, (us_socket_t *) this)
         );
 
@@ -311,7 +311,7 @@ public:
 
     /* Unsubscribe from a topic, returns true if we were subscribed. */
     bool unsubscribe(std::string_view topic, bool = false) {
-        WebSocketContextData<SSL, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL,
+        WebSocketContextData<SSL, isServer, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, isServer, USERDATA> *) us_socket_context_ext(SSL,
             (us_socket_context_t *) us_socket_context(SSL, (us_socket_t *) this)
         );
 
@@ -333,7 +333,7 @@ public:
 
     /* Returns whether this socket is subscribed to the specified topic */
     bool isSubscribed(std::string_view topic) {
-        WebSocketContextData<SSL, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL,
+        WebSocketContextData<SSL, isServer, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, isServer, USERDATA> *) us_socket_context_ext(SSL,
             (us_socket_context_t *) us_socket_context(SSL, (us_socket_t *) this)
         );
 
@@ -355,7 +355,7 @@ public:
      * inside the callback ONLY IF not modifying the topic passed to the callback.
      * Topic names are valid only for the duration of the callback. */
     void iterateTopics(MoveOnlyFunction<void(std::string_view)> cb) {
-        WebSocketContextData<SSL, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL,
+        WebSocketContextData<SSL, isServer, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, isServer, USERDATA> *) us_socket_context_ext(SSL,
             (us_socket_context_t *) us_socket_context(SSL, (us_socket_t *) this)
         );
 
@@ -377,7 +377,7 @@ public:
      * We, the WebSocket, must be subscribed to the topic itself and if so - no message will be sent to ourselves.
      * Use App::publish for an unconditional publish that simply publishes to whomever might be subscribed. */
     bool publish(std::string_view topic, std::string_view message, OpCode opCode = OpCode::TEXT, bool compress = false) {
-        WebSocketContextData<SSL, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL,
+        WebSocketContextData<SSL, isServer, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, isServer, USERDATA> *) us_socket_context_ext(SSL,
             (us_socket_context_t *) us_socket_context(SSL, (us_socket_t *) this)
         );
 
