@@ -58,7 +58,7 @@ private:
     }
 
     /* Returns true on breakage */
-    static bool handleFragment(char *data, size_t length, unsigned int remainingBytes, int opCode, bool fin, WebSocketState<true> *webSocketState, void *s) {
+    static bool handleFragment(char *data, size_t length, unsigned int remainingBytes, int opCode, bool fin, WebSocketState<true> *webSocketState, void *s, const bool& isLastPacketFrame = false) {
         /* WebSocketData and WebSocketContextData */
         WebSocketContextData<SSL, isServer, USERDATA> *webSocketContextData = (WebSocketContextData<SSL, isServer, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
         WebSocketData *webSocketData = (WebSocketData *) us_socket_ext(SSL, (us_socket_t *) s);
@@ -91,13 +91,13 @@ private:
                 }
 
                 /* Check text messages for Utf-8 validity */
-                if (opCode == 1 && !protocol::isValidUtf8((unsigned char *) data, length)) {
+                if (opCode == 1 && (!webSocketContextData->skipUTF8Validation) && !protocol::isValidUtf8((unsigned char *) data, length)) {
                     forceClose(webSocketState, s, ERR_INVALID_TEXT);
                     return true;
                 }
 
                 /* Emit message event & break if we are closed or shut down when returning */
-                if (webSocketContextData->messageHandler) {
+                if (webSocketContextData->messageHandler && ((!webSocketContextData->onlyLastPacketFrame) || isLastPacketFrame)) {
                     webSocketContextData->messageHandler((WebSocket<SSL, isServer, USERDATA> *) s, std::string_view(data, length), (OpCode) opCode);
                     if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
                         return true;
@@ -156,13 +156,13 @@ private:
                     }
 
                     /* Check text messages for Utf-8 validity */
-                    if (opCode == 1 && !protocol::isValidUtf8((unsigned char *) data, length)) {
+                    if (opCode == 1 && (!webSocketContextData->skipUTF8Validation) && !protocol::isValidUtf8((unsigned char *) data, length)) {
                         forceClose(webSocketState, s, ERR_INVALID_TEXT);
                         return true;
                     }
 
                     /* Emit message and check for shutdown or close */
-                    if (webSocketContextData->messageHandler) {
+                    if (webSocketContextData->messageHandler && ((!webSocketContextData->onlyLastPacketFrame) || isLastPacketFrame)) {
                         webSocketContextData->messageHandler((WebSocket<SSL, isServer, USERDATA> *) s, std::string_view(data, length), (OpCode) opCode);
                         if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
                             return true;
@@ -179,7 +179,7 @@ private:
 
             if (!remainingBytes && fin && !webSocketData->controlTipLength) {
                 if (opCode == CLOSE) {
-                    auto closeFrame = protocol::parseClosePayload(data, length);
+                    auto closeFrame = protocol::parseClosePayload(data, length, webSocketContextData->skipUTF8Validation);
                     webSocket->end(closeFrame.code, std::string_view(closeFrame.message, closeFrame.length));
                     return true;
                 } else {
@@ -208,7 +208,7 @@ private:
                 if (!remainingBytes && fin) {
                     char *controlBuffer = (char *) webSocketData->fragmentBuffer.data() + webSocketData->fragmentBuffer.length() - webSocketData->controlTipLength;
                     if (opCode == CLOSE) {
-                        protocol::CloseFrame closeFrame = protocol::parseClosePayload(controlBuffer, webSocketData->controlTipLength);
+                        protocol::CloseFrame closeFrame = protocol::parseClosePayload(controlBuffer, webSocketData->controlTipLength, webSocketContextData->skipUTF8Validation);
                         webSocket->end(closeFrame.code, std::string_view(closeFrame.message, closeFrame.length));
                         return true;
                     } else {

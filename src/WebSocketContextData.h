@@ -79,6 +79,10 @@ public:
     bool sendPingsAutomatically;
     unsigned short maxLifetime;
 
+    /* Custom aditional options */
+    bool skipUTF8Validation = false;
+    bool onlyLastPacketFrame = false;
+
     /* These are calculated on creation */
     std::pair<unsigned short, unsigned short> idleTimeoutComponents;
 

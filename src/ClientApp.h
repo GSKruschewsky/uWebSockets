@@ -74,6 +74,9 @@ public:
         bool resetIdleTimeoutOnSend = false;
         /* A good default, esp. for newcomers */
         bool sendPingsAutomatically = true;
+        /* Custom aditional options */
+        bool skipUTF8Validation = false;
+        bool onlyLastPacketFrame = false;
         /* Maximum socket lifetime in minutes before forced closure (defaults to disabled) */
         unsigned short maxLifetime = 0;
         MoveOnlyFunction<void(HttpResponse<SSL> *, HttpRequest *, struct us_socket_context_t *)> upgrade = nullptr;
@@ -152,6 +155,9 @@ public:
         webSocketContext->getExt()->sendPingsAutomatically = behavior.sendPingsAutomatically;
         webSocketContext->getExt()->maxLifetime = behavior.maxLifetime;
         webSocketContext->getExt()->compression = behavior.compression;
+        /* Custom aditional options  */
+        webSocketContext->getExt()->skipUTF8Validation = behavior.skipUTF8Validation;
+        webSocketContext->getExt()->onlyLastPacketFrame = behavior.onlyLastPacketFrame;
 
         /* Calculate idleTimeoutCompnents */
         webSocketContext->getExt()->calculateIdleTimeoutCompnents(behavior.idleTimeout);

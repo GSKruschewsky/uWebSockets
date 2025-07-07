@@ -28,15 +28,15 @@ struct Impl {
 
     }
 
-    static bool handleFragment(char *data, size_t length, unsigned int remainingBytes, int opCode, bool fin, uWS::WebSocketState<true> *webSocketState, void *s) {
+    static bool handleFragment(char *data, size_t length, unsigned int remainingBytes, int opCode, bool fin, uWS::WebSocketState<true> *webSocketState, void *s, const bool& skipUTF8Validation = false) {
 
         if (opCode == uWS::TEXT) {
-            if (!uWS::protocol::isValidUtf8((unsigned char *)data, length)) {
+            if ((!skipUTF8Validation) && !uWS::protocol::isValidUtf8((unsigned char *)data, length)) {
                 /* Return break */
                 return true;
             }
         } else if (opCode == uWS::CLOSE) {
-            uWS::protocol::parseClosePayload((char *)data, length);
+            uWS::protocol::parseClosePayload((char *)data, length, skipUTF8Validation);
         }
 
         /* Return ok */
