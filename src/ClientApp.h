@@ -248,10 +248,6 @@ public:
             host = hostPort;
         }
 
-        std::cout << "SSL= " << SSL << std::endl;
-        std::cout << "host= " << host << std::endl;
-        std::cout << "port= " << port << std::endl;
-
         /* Connect the socket */
         httpContext->connect(host.c_str(), port, 0);
 

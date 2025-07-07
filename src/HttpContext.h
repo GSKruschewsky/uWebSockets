@@ -111,8 +111,6 @@ private:
         /* Handle HTTP data streams */
         us_socket_context_on_data(SSL, getSocketContext(), [](us_socket_t *s, char *data, int length) {
 
-            std::cout << "Server received:\n" << std::string_view{ data, (size_t)length } << '\n' << std::endl;
-
             // total overhead is about 210k down to 180k
             // ~210k req/sec is the original perf with write in data
             // ~200k req/sec is with cork and formatting

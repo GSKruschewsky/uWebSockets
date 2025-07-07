@@ -285,8 +285,6 @@ private:
 
         /* Handle WebSocket data streams */
         us_socket_context_on_data(SSL, getSocketContext(), [](auto *s, char *data, int length) {
-            std::cout << "WebSocket server message (" << length << "):\n" << std::string_view{ data, (size_t) length } << '\n' << std::endl;
-
             /* We need the websocket data */
             WebSocketData *webSocketData = (WebSocketData *) (us_socket_ext(SSL, s));
 
