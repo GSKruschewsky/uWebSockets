@@ -90,6 +90,11 @@ public:
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, int, std::string_view)> close = nullptr;
     };
 
+    /* Returns the SSL_CTX of this app, or nullptr. */
+    void *getNativeHandle() {
+        return us_socket_context_get_native_handle(SSL, (struct us_socket_context_t *) httpContext);
+    }
+
     template <typename UserData>
     TemplatedClientApp &&ws(WebSocketBehavior<UserData> &&behavior) {
         /* Don't compile if alignment rules cannot be satisfied */
