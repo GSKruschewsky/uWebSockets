@@ -247,7 +247,6 @@ public:
         bool perMessageDeflate = false;
         CompressOptions compressOptions = CompressOptions::DISABLED;
 
-        
         /* CLIENT: Parse what server actually negotiated using our requested compression settings */
         if (secWebSocketExtensions.length() && webSocketContextData->compression != DISABLED) {
             perMessageDeflate = true;

@@ -210,13 +210,16 @@ static inline size_t formatClosePayload(char *dst, uint16_t code, const char *me
     return 0;
 }
 
+template <bool isServer>
 static inline size_t messageFrameSize(size_t messageSize) {
+    /* Clients must have +4 chars for the mask key */
     if (messageSize < 126) {
-        return 2 + messageSize;
+        return (isServer ? 2 : 6) + messageSize;
     } else if (messageSize <= UINT16_MAX) {
-        return 4 + messageSize;
+        return (isServer ? 4 : 8) + messageSize;
     }
-    return 10 + messageSize;
+
+    return (isServer ? 10 : 14) + messageSize;
 }
 
 enum {

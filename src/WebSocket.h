@@ -182,7 +182,7 @@ public:
             }
 
             /* Get size, allocate size, write if needed */
-            size_t messageFrameSize = protocol::messageFrameSize(message.length());
+            size_t messageFrameSize = protocol::messageFrameSize<isServer>(message.length());
             auto [sendBuffer, sendBufferAttribute] = Super::getSendBuffer(messageFrameSize);
             protocol::formatMessage<isServer>(sendBuffer, message.data(), message.length(), opCode, message.length(), compress, fin);
 

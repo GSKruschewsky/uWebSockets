@@ -175,7 +175,6 @@ public:
         httpContext->filter([ this ](HttpResponse<SSL> *res, int event) {
             if (event == 1) {
                 /* Connection established */
-
                 if (!this->handshakeSent) {
                     this->handshakeSent = true;
 
