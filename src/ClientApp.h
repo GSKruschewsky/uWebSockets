@@ -17,7 +17,7 @@
 namespace uWS {
 
     /* This one matches us_socket_context_options_t but has default values */
-    struct SocketContextOptions {
+    struct ClientSocketContextOptions {
         const char *key_file_name = nullptr;
         const char *cert_file_name = nullptr;
         const char *passphrase = nullptr;
@@ -29,12 +29,12 @@ namespace uWS {
         /* Conversion operator used internally */
         operator struct us_socket_context_options_t() const {
             struct us_socket_context_options_t socket_context_options;
-            memcpy(&socket_context_options, this, sizeof(SocketContextOptions));
+            memcpy(&socket_context_options, this, sizeof(ClientSocketContextOptions));
             return socket_context_options;
         }
     };
 
-    static_assert(sizeof(struct us_socket_context_options_t) == sizeof(SocketContextOptions), "Mismatching uSockets/uWebSockets ABI");
+    static_assert(sizeof(struct us_socket_context_options_t) == sizeof(ClientSocketContextOptions), "Mismatching uSockets/uWebSockets ABI");
     
 template <bool SSL>
 struct TemplatedClientApp {
@@ -51,7 +51,7 @@ private:
 
 public:
 
-    TemplatedClientApp(SocketContextOptions options = {}) {
+    TemplatedClientApp(ClientSocketContextOptions options = {}) {
         httpContext = HttpContext<SSL>::create(Loop::get(), options);
     }
 
