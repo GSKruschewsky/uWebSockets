@@ -48,6 +48,7 @@ private:
     int port;
     std::string path;
     std::string host;
+    std::unordered_map<std::string, std::string> customHeaders;
 
 public:
 
@@ -77,6 +78,7 @@ public:
         /* Custom aditional options */
         bool skipUTF8Validation = false;
         bool onlyLastPacketFrame = false;
+        std::unordered_map<std::string, std::string> customHeaders = {};
         /* Maximum socket lifetime in minutes before forced closure (defaults to disabled) */
         unsigned short maxLifetime = 0;
         MoveOnlyFunction<void(HttpResponse<SSL> *, HttpRequest *, struct us_socket_context_t *)> upgrade = nullptr;
@@ -160,9 +162,11 @@ public:
         webSocketContext->getExt()->sendPingsAutomatically = behavior.sendPingsAutomatically;
         webSocketContext->getExt()->maxLifetime = behavior.maxLifetime;
         webSocketContext->getExt()->compression = behavior.compression;
+        
         /* Custom aditional options  */
         webSocketContext->getExt()->skipUTF8Validation = behavior.skipUTF8Validation;
         webSocketContext->getExt()->onlyLastPacketFrame = behavior.onlyLastPacketFrame;
+        this->customHeaders = std::move(behavior.customHeaders);
 
         /* Calculate idleTimeoutCompnents */
         webSocketContext->getExt()->calculateIdleTimeoutCompnents(behavior.idleTimeout);
@@ -181,7 +185,12 @@ public:
                     /* Writes a new key to "this->webSocketKey" */
                     WebSocketHandshake::generateKey(this->webSocketKey);
 
-                    res->writeInitHandshake(this->host, this->path, this->webSocketKey);
+                    res->writeInitHandshake(
+                        this->host, 
+                        this->path, 
+                        this->webSocketKey,
+                        this->customHeaders
+                    );
                 }
             } else if (event == -1) {
                 /* Connection closed */

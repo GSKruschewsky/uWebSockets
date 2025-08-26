@@ -526,22 +526,35 @@ public:
      * We only check when you actively push data or end the request */
 
     /* Write initial handshake request */
-    HttpResponse *writeInitHandshake(std::string_view host, std::string_view path, const char *webSocketKey) {
+    HttpResponse *writeInitHandshake(
+        std::string_view host, 
+        std::string_view path, 
+        const char *webSocketKey,
+        const std::unordered_map<std::string, std::string> &headers
+    ) {
 
-        size_t handshakeLen = 138 + host.size() + path.size();
+        Super::write("GET ", 4);
+        Super::write(path.data(), path.size());
+        Super::write(" HTTP/1.1\r\n", 11);
+        Super::write("Host: ", 6);
+        Super::write(host.data(), host.size());
+        Super::write("\r\n", 2);
+        Super::write("Connection: Upgrade\r\n", 21);
+        Super::write("Upgrade: websocket\r\n", 20);
+        Super::write("Sec-WebSocket-Key: ", 19);
+        Super::write(webSocketKey, 24);
+        Super::write("\r\n", 2);
+        Super::write("Sec-WebSocket-Version: 13\r\n", 27);
 
-        Super::write("GET ", 4, false, (handshakeLen -= 4));
-        Super::write(path.data(), path.size(), false, (handshakeLen -= path.size()));
-        Super::write(" HTTP/1.1\r\n", 11, false, (handshakeLen -= 11));
-        Super::write("Host: ", 6, false, (handshakeLen -= 6));
-        Super::write(host.data(), host.size(), false, (handshakeLen -= host.size()));
-        Super::write("\r\n", 2, false, (handshakeLen -= 2));
-        Super::write("Connection: Upgrade\r\n", 21, false, (handshakeLen -= 21));
-        Super::write("Upgrade: websocket\r\n", 20, false, (handshakeLen -= 20));
-        Super::write("Sec-WebSocket-Key: ", 19, false, (handshakeLen -= 19));
-        Super::write(webSocketKey, 24, false, (handshakeLen -= 24));
-        Super::write("\r\n", 2, false, (handshakeLen -= 2));
-        Super::write("Sec-WebSocket-Version: 13\r\n\r\n", 29, false, (handshakeLen -= 29));
+        // Write any extra headers
+        for (auto &[key, value] : headers) {
+            Super::write(key.data(), key.size());
+            Super::write(": ", 2);
+            Super::write(value.data(), value.size());
+            Super::write("\r\n", 2);
+        }
+
+        Super::write("\r\n", 2);
         
         return this;
     }
