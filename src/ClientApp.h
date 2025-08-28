@@ -263,6 +263,9 @@ public:
 
         /* Connect the socket */
         httpContext->connect(host.c_str(), port, 0);
+        
+        /* Set client side SNI (It will do nothing if not 'SSL') */
+        us_socket_context_set_host_name(SSL, (struct us_socket_context_t *) httpContext, host.c_str());
 
         return std::move(static_cast<TemplatedClientApp &&>(*this));
     }
