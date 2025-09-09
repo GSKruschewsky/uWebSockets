@@ -244,15 +244,41 @@ public:
 
     TemplatedClientApp &&connect(std::string url) {
         /* Parses the URL setting "host", "path" and "port" */
-        port = SSL ? 443 : 80;
+    
+        // Check protocol and validate against SSL setting
         if (url.rfind("wss://", 0) == 0) {
+            if (!SSL) {
+                 throw std::runtime_error("WebSocket client SSL is disabled but URL uses \"wss://\".");
+            }
             url = url.substr(6);
         } else if (url.rfind("ws://", 0) == 0) {
+            if (SSL) {
+                throw std::runtime_error("WebSocket client SSL is enabled but URL uses \"ws://\".");
+            }
             url = url.substr(5);
         }
-        size_t slash = url.find('/');
-        std::string hostPort = url.substr(0, slash);
-        path = (slash != std::string::npos) ? url.substr(slash) : "/";
+        
+        // Set default port based on protocol
+        port = SSL ? 443 : 80;
+        
+        // Find the first occurrence of '/' or '?' to separate host:port from path
+        size_t pathStart = url.find_first_of("/?");
+        std::string hostPort = url.substr(0, pathStart);
+        
+        // Extract path (everything after host:port, including query string)
+        if (pathStart != std::string::npos) {
+            path = "/" + url.substr(pathStart + 1);
+            // Handle the case where path starts with '?'
+            if (url[pathStart] == '?') {
+                path = "/?" + url.substr(pathStart + 1);
+            } else {
+                path = url.substr(pathStart);
+            }
+        } else {
+            path = "/";
+        }
+        
+        // Parse host and port
         size_t colon = hostPort.find(':');
         if (colon != std::string::npos) {
             host = hostPort.substr(0, colon);
