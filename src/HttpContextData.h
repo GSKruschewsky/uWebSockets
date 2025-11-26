@@ -48,6 +48,8 @@ private:
     /* This is the default router for default SNI or non-SSL */
     HttpRouter<RouterData> router;
     void *upgradedWebSocket = nullptr;
+    char *reqRemaningData = nullptr;
+    unsigned int reqRemaningDataLen = 0;
     bool isParsingHttp = false;
 
     /* If we are main acceptor, distribute to these apps */

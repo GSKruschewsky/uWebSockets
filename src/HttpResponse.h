@@ -237,7 +237,7 @@ public:
 
     
     template <typename UserData>
-    void upgradeClient (UserData &&userData, std::string_view secWebSocketKey, std::string_view secWebSocketProtocol,
+    void upgradeClient (UserData &&userData, std::string_view /*secWebSocketKey*/, std::string_view /*secWebSocketProtocol*/,
             std::string_view secWebSocketExtensions,
             struct us_socket_context_t *webSocketContext) {
 
@@ -380,6 +380,21 @@ public:
             webSocketContextData->openHandler(webSocket);
         }
 
+        if (
+            httpContextData->reqRemaningData && 
+            httpContextData->reqRemaningDataLen > 0
+        ) {
+            /* If we have remaning data from HTTP parser handles it as 'WebSocketContext' */
+            ((WebSocketContext<SSL, false, UserData> *) webSocketContext)->handleData(
+                (struct us_socket_t *) webSocket, 
+                httpContextData->reqRemaningData, 
+                (int) httpContextData->reqRemaningDataLen
+            );
+
+            /* Clear remaning data */
+            httpContextData->reqRemaningData = nullptr;
+            httpContextData->reqRemaningDataLen = 0;
+        }
     }
 
     /* Manually upgrade to WebSocket. Typically called in upgrade handler. Immediately calls open handler.
@@ -534,10 +549,10 @@ public:
     ) {
 
         Super::write("GET ", 4);
-        Super::write(path.data(), path.size());
+        Super::write(path.data(), (int)path.size());
         Super::write(" HTTP/1.1\r\n", 11);
         Super::write("Host: ", 6);
-        Super::write(host.data(), host.size());
+        Super::write(host.data(), (int)host.size());
         Super::write("\r\n", 2);
         Super::write("Connection: Upgrade\r\n", 21);
         Super::write("Upgrade: websocket\r\n", 20);
@@ -548,9 +563,9 @@ public:
 
         // Write any extra headers
         for (auto &[key, value] : headers) {
-            Super::write(key.data(), key.size());
+            Super::write(key.data(), (int)key.size());
             Super::write(": ", 2);
-            Super::write(value.data(), value.size());
+            Super::write(value.data(), (int)value.size());
             Super::write("\r\n", 2);
         }
 

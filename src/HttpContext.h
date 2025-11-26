@@ -142,7 +142,7 @@ private:
 
             /* The return value is entirely up to us to interpret. The HttpParser only care for whether the returned value is DIFFERENT or not from passed user */
             auto [err, returnedSocket] = httpResponseData->consumePostPadded(data, (unsigned int) length, s, proxyParser, 
-                [httpContextData](void *s, HttpRequest *httpRequest) -> void * {
+                [httpContextData](void *s, HttpRequest *httpRequest, char *remaningData, unsigned int remaningDataLength) -> void * {
                     /* For every request we reset the timeout and hang until user makes action */
                     /* Warning: if we are in shutdown state, resetting the timer is a security issue! */
                     us_socket_timeout(SSL, (us_socket_t *) s, 0);
@@ -169,6 +169,10 @@ private:
                     if (httpRequest->isAncient() || httpRequest->getHeader("connection").length() == 5) {
                         httpResponseData->state |= HttpResponseData<SSL>::HTTP_CONNECTION_CLOSE;
                     }
+
+                    /* Store remaning data for next request */
+                    httpContextData->reqRemaningData = remaningData;
+                    httpContextData->reqRemaningDataLen = remaningDataLength;
 
                     /* Select the router based on SNI (only possible for SSL) */
                     auto *selectedRouter = &httpContextData->router;
@@ -220,7 +224,8 @@ private:
 
                 }, 
                 [httpResponseData](void *user, std::string_view data, bool fin) -> void * {
-                    
+                    std::cout << "At dataHandler" << std::endl;
+
                     /* We always get an empty chunk even if there is no data */
                     if (httpResponseData->inStream) {
 
@@ -325,8 +330,6 @@ private:
 
             /* It is okay to uncork a closed socket and we need to */
             ((AsyncSocket<SSL> *) s)->uncork();
-            
-            std::cout << "H3" << std::endl;
 
             /* We cannot return nullptr to the underlying stack in any case */
             return s;

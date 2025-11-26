@@ -512,7 +512,15 @@ private:
       * or [consumed, nullptr] for "break; I am closed or upgraded to websocket"
       * or [whatever, fullptr] for "break and close me, I am a parser error!" */
     template <int CONSUME_MINIMALLY>
-    std::pair<unsigned int, void *> fenceAndConsumePostPadded(char *data, unsigned int length, void *user, void *reserved, HttpRequest *req, MoveOnlyFunction<void *(void *, HttpRequest *)> &requestHandler, MoveOnlyFunction<void *(void *, std::string_view, bool)> &dataHandler) {
+    std::pair<unsigned int, void *> fenceAndConsumePostPadded(
+        char *data, 
+        unsigned int length, 
+        void *user, 
+        void *reserved, 
+        HttpRequest *req, 
+        MoveOnlyFunction<void *(void *, HttpRequest *, char *, unsigned int)> &requestHandler, 
+        MoveOnlyFunction<void *(void *, std::string_view, bool)> &dataHandler
+    ) {
 
         /* How much data we CONSUMED (to throw away) */
         unsigned int consumedTotal = 0;
@@ -575,7 +583,7 @@ private:
             /* If returned socket is not what we put in we need
              * to break here as we either have upgraded to
              * WebSockets or otherwise closed the socket. */
-            void *returnedUser = requestHandler(user, req);
+            void *returnedUser = requestHandler(user, req, data, length);
             if (returnedUser != user) {
                 /* We are upgraded to WebSocket or otherwise broken */
                 return {consumedTotal, returnedUser};
@@ -654,7 +662,14 @@ private:
     }
 
 public:
-    std::pair<unsigned int, void *> consumePostPadded(char *data, unsigned int length, void *user, void *reserved, MoveOnlyFunction<void *(void *, HttpRequest *)> &&requestHandler, MoveOnlyFunction<void *(void *, std::string_view, bool)> &&dataHandler) {
+    std::pair<unsigned int, void *> consumePostPadded(
+        char *data, 
+        unsigned int length, 
+        void *user, 
+        void *reserved, 
+        MoveOnlyFunction<void *(void *, HttpRequest *, char *, unsigned int)> &&requestHandler, 
+        MoveOnlyFunction<void *(void *, std::string_view, bool)> &&dataHandler
+    ) {
 
         /* This resets BloomFilter by construction, but later we also reset it again.
          * Optimize this to skip resetting twice (req could be made global) */

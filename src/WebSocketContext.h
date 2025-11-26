@@ -30,7 +30,47 @@ struct WebSocketContext {
     template <bool> friend struct TemplatedApp;
     template <bool> friend struct TemplatedClientApp;
     template <bool, typename> friend struct WebSocketProtocol;
+
 private:
+
+    constexpr static struct us_socket_t *(*on_data)(struct us_socket_t *s, char *data, int length) = [](auto *s, char *data, int length) {
+        /* We need the websocket data */
+        WebSocketData *webSocketData = (WebSocketData *) (us_socket_ext(SSL, s));
+
+        /* When in websocket shutdown mode, we do not care for ANY message, whether responding close frame or not.
+            * We only care for the TCP FIN really, not emitting any message after closing is key */
+        if (webSocketData->isShuttingDown) {
+            return s;
+        }
+
+        auto *webSocketContextData = (WebSocketContextData<SSL, isServer, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
+        auto *asyncSocket = (AsyncSocket<SSL> *) s;
+
+        /* Every time we get data and not in shutdown state we simply reset the timeout */
+        asyncSocket->timeout(webSocketContextData->idleTimeoutComponents.first);
+        webSocketData->hasTimedOut = false;
+
+        /* We always cork on data */
+        asyncSocket->cork();
+
+        /* This parser has virtually no overhead */
+        WebSocketProtocol<isServer, WebSocketContext<SSL, isServer, USERDATA>>::consume(data, (unsigned int) length, (WebSocketState<true> *) webSocketData, s);
+
+        /* Uncorking a closed socekt is fine, in fact it is needed */
+        asyncSocket->uncork();
+
+        /* If uncorking was successful and we are in shutdown state then send TCP FIN */
+        if (asyncSocket->getBufferedAmount() == 0) {
+            /* We can now be in shutdown state */
+            if (webSocketData->isShuttingDown) {
+                /* Shutting down a closed socket is handled by uSockets and just fine */
+                asyncSocket->shutdown();
+            }
+        }
+
+        return s;
+    };
+
     WebSocketContext() = delete;
 
     us_socket_context_t *getSocketContext() {
@@ -284,43 +324,7 @@ private:
         });
 
         /* Handle WebSocket data streams */
-        us_socket_context_on_data(SSL, getSocketContext(), [](auto *s, char *data, int length) {
-            /* We need the websocket data */
-            WebSocketData *webSocketData = (WebSocketData *) (us_socket_ext(SSL, s));
-
-            /* When in websocket shutdown mode, we do not care for ANY message, whether responding close frame or not.
-             * We only care for the TCP FIN really, not emitting any message after closing is key */
-            if (webSocketData->isShuttingDown) {
-                return s;
-            }
-
-            auto *webSocketContextData = (WebSocketContextData<SSL, isServer, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
-            auto *asyncSocket = (AsyncSocket<SSL> *) s;
-
-            /* Every time we get data and not in shutdown state we simply reset the timeout */
-            asyncSocket->timeout(webSocketContextData->idleTimeoutComponents.first);
-            webSocketData->hasTimedOut = false;
-
-            /* We always cork on data */
-            asyncSocket->cork();
-
-            /* This parser has virtually no overhead */
-            WebSocketProtocol<isServer, WebSocketContext<SSL, isServer, USERDATA>>::consume(data, (unsigned int) length, (WebSocketState<true> *) webSocketData, s);
-
-            /* Uncorking a closed socekt is fine, in fact it is needed */
-            asyncSocket->uncork();
-
-            /* If uncorking was successful and we are in shutdown state then send TCP FIN */
-            if (asyncSocket->getBufferedAmount() == 0) {
-                /* We can now be in shutdown state */
-                if (webSocketData->isShuttingDown) {
-                    /* Shutting down a closed socket is handled by uSockets and just fine */
-                    asyncSocket->shutdown();
-                }
-            }
-
-            return s;
-        });
+        us_socket_context_on_data(SSL, getSocketContext(), on_data);
 
         /* Handle HTTP write out (note: SSL_read may trigger this spuriously, the app need to handle spurious calls) */
         us_socket_context_on_writable(SSL, getSocketContext(), [](auto *s) {
@@ -428,6 +432,10 @@ public:
         /* Init socket context data */
         new ((WebSocketContextData<SSL, isServer, USERDATA> *) us_socket_context_ext(SSL, (us_socket_context_t *)webSocketContext)) WebSocketContextData<SSL, isServer, USERDATA>(topicTree);
         return webSocketContext->init();
+    }
+
+    static struct us_socket_t *handleData(struct us_socket_t *s, char *data, int length) {
+        return on_data(s, data, length);
     }
 };
 

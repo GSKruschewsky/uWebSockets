@@ -5,19 +5,25 @@
 #include <iostream>
 
 int main() {
-    uWS::ClientApp app(uWS::WebSocketClientBehavior{
-        .open = [](/*auto *ws*/) {
-            std::cout << "Hello and welcome to client" << std::endl;
-        },
-        .message = [](std::string_view) {
+    struct UserData {
+        
+    };
 
+    uWS::CliApp client;
+    client.ws<UserData>({
+        .open = [](auto */*ws*/) {
+            std::cout << "Client is open" << std::endl;
         },
-        .close = [](/*auto *ws*/) {
-            std::cout << "bye" << std::endl;
+        .message = [](auto *ws, std::string_view msg, uWS::OpCode /*opCode*/) {
+            std::cout << "Received message: " << msg << std::endl;
+            ws->close();
+        },
+        .close = [](auto */*ws*/, int code, std::string_view reason) {
+            std::cout << "Connection closed: " << code << " - " << reason << std::endl;
         }
     });
     
-    app.connect("ws://localhost:3000", "protocol");
+    client.connect("ws://localhost:3000");
     
-    app.run();
+    client.run();
 }
