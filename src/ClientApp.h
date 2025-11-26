@@ -48,6 +48,7 @@ private:
     int port;
     std::string path;
     std::string host;
+    char *source_host;
     std::unordered_map<std::string, std::string> customHeaders;
 
 public:
@@ -75,10 +76,11 @@ public:
         bool resetIdleTimeoutOnSend = false;
         /* A good default, esp. for newcomers */
         bool sendPingsAutomatically = true;
-        /* Custom aditional options */
+        /* Custom aditional options (Client-specific) */
         bool skipUTF8Validation = false;
         bool onlyLastPacketFrame = false;
         std::unordered_map<std::string, std::string> customHeaders = {};
+        char *localAddress = nullptr;
         /* Maximum socket lifetime in minutes before forced closure (defaults to disabled) */
         unsigned short maxLifetime = 0;
         MoveOnlyFunction<void(HttpResponse<SSL> *, HttpRequest *, struct us_socket_context_t *)> upgrade = nullptr;
@@ -163,10 +165,11 @@ public:
         webSocketContext->getExt()->maxLifetime = behavior.maxLifetime;
         webSocketContext->getExt()->compression = behavior.compression;
         
-        /* Custom aditional options  */
+        /* Custom aditional options (Client-specific) */
         webSocketContext->getExt()->skipUTF8Validation = behavior.skipUTF8Validation;
         webSocketContext->getExt()->onlyLastPacketFrame = behavior.onlyLastPacketFrame;
         this->customHeaders = std::move(behavior.customHeaders);
+        this->source_host = behavior.localAddress;
 
         /* Calculate idleTimeoutCompnents */
         webSocketContext->getExt()->calculateIdleTimeoutCompnents(behavior.idleTimeout);
@@ -288,7 +291,7 @@ public:
         }
 
         /* Connect the socket */
-        httpContext->connect(host.c_str(), port, 0);
+        httpContext->connect(host.c_str(), port, 0, this->source_host);
         
         /* Set client side SNI (It will do nothing if not 'SSL') */
         us_socket_context_set_host_name(SSL, (struct us_socket_context_t *) httpContext, host.c_str());

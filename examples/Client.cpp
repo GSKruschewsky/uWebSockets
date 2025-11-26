@@ -9,21 +9,28 @@ int main() {
         
     };
 
-    uWS::CliApp client;
-    client.ws<UserData>({
-        .open = [](auto */*ws*/) {
-            std::cout << "Client is open" << std::endl;
-        },
-        .message = [](auto *ws, std::string_view msg, uWS::OpCode /*opCode*/) {
-            std::cout << "Received message: " << msg << std::endl;
-            ws->close();
-        },
-        .close = [](auto */*ws*/, int code, std::string_view reason) {
-            std::cout << "Connection closed: " << code << " - " << reason << std::endl;
-        }
-    });
-    
-    client.connect("ws://localhost:3000");
-    
-    client.run();
+    uWS::CliApp()
+        .ws<UserData>({
+            /* Options */
+            .skipUTF8Validation = true,
+            .onlyLastPacketFrame = false,
+
+            /* Handlers */
+            .open = [](auto */*ws*/) {
+                std::cout << "Client is open" << std::endl;
+            },
+            .message = [](auto *ws, std::string_view msg, uWS::OpCode /*opCode*/) {
+                std::cout << "Received message: " << msg << std::endl;
+                ws->close();
+            },
+            .close = [](auto */*ws*/, int code, std::string_view reason) {
+                std::cout << "Connection closed: " << code << " - " << reason << std::endl;
+            }
+        })
+        .connect("ws://localhost:3000")
+        .run();
+
+    std::cout << "Client stopped" << std::endl;
+
+    return 0;
 }

@@ -502,8 +502,16 @@ public:
     }
 
     /* Connect to host and port using this HttpContext */
-    us_socket_t *connect(const char* host, int port, int options) {
-        return us_socket_context_connect(SSL, getSocketContext(), host, port, nullptr, options, sizeof(HttpResponseData<SSL>));
+    us_socket_t *connect(const char* host, int port, int options, const char *source_host = nullptr) {
+        return us_socket_context_connect(
+            SSL, 
+            getSocketContext(), 
+            host, 
+            port, 
+            source_host, 
+            options, 
+            sizeof(HttpResponseData<SSL>)
+        );
     }
 
     void onPreOpen(LIBUS_SOCKET_DESCRIPTOR (*handler)(struct us_socket_context_t *, LIBUS_SOCKET_DESCRIPTOR)) {
