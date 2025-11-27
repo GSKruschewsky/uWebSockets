@@ -265,10 +265,11 @@ public:
                 }
                 */
 
+                std::string closeReason = oss.str();
                 webSocketContextData->closeHandler(
                     (WebSocket<SSL, false, UserData> *) res,
                     1002,
-                    oss.str()
+                    closeReason
                 );
             }
 
