@@ -224,8 +224,6 @@ private:
 
                 }, 
                 [httpResponseData](void *user, std::string_view data, bool fin) -> void * {
-                    std::cout << "At dataHandler" << std::endl;
-
                     /* We always get an empty chunk even if there is no data */
                     if (httpResponseData->inStream) {
 
@@ -270,8 +268,13 @@ private:
 
             /* If we got fullptr that means the parser wants us to close the socket from error (same as calling the errorHandler) */
             if (returnedSocket == FULLPTR) {
-                /* For errors, we only deliver them "at most once". We don't care if they get halfways delivered or not. */
-                us_socket_write(SSL, s, httpErrorResponses[err].data(), (int) httpErrorResponses[err].length(), false);
+
+                /* If its a server error, handle it properly */
+                if (err <= 3) {
+                    /* For errors, we only deliver them "at most once". We don't care if they get halfways delivered or not. */
+                    us_socket_write(SSL, s, httpErrorResponses[err].data(), (int) httpErrorResponses[err].length(), false);
+                }
+
                 us_socket_shutdown(SSL, s);
                 /* Close any socket on HTTP errors */
                 us_socket_close(SSL, s, 0, nullptr);

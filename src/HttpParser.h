@@ -342,6 +342,14 @@ private:
                     if (data[0] == '\r') {
                         return nullptr;
                     }
+                    /* If it is a 'handshakeResponse' error, we fully parse it... */
+                    if (
+                        handshakeResponse && 
+                        memcmp("HTTP/1.1", header.key.data(), 8) == 0
+                    ) {
+                        return data - header.value.size();
+                    }
+
                     /* This is an error */
                     return (char *) 0x1;
                 }
@@ -437,15 +445,18 @@ private:
 
             /* We should not accept whitespace between key and colon, so colon must foloow immediately */
             if (postPaddedBuffer[0] != ':') {
-                /* If we stand at the end, we are fragmented */
-                if (postPaddedBuffer == end) {
+                if (headers[-1].key.size() != 8 || memcmp("HTTP/1.1", headers[-1].key.data(), 8) != 0 || (!handshakeResponse)) {
+                    /* If we stand at the end, we are fragmented */
+                    if (postPaddedBuffer == end) {
+                        return 0;
+                    }
+                    /* Error: invalid chars in field name */
+                    err = HTTP_ERROR_400_BAD_REQUEST;
                     return 0;
                 }
-                /* Error: invalid chars in field name */
-                err = HTTP_ERROR_400_BAD_REQUEST;
-                return 0;
+            } else {
+                postPaddedBuffer++;
             }
-            postPaddedBuffer++;
 
             preliminaryValue = postPaddedBuffer;
             /* The goal of this call is to find next "\r\n", or any invalid field value chars, fast */

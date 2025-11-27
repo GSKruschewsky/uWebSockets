@@ -4,6 +4,7 @@
 #include <string>
 #include <charconv>
 #include <string_view>
+#include <sstream>
 
 /* An app is a convenience wrapper of some of the most used fuctionalities and allows a
  * builder-pattern kind of init. Apps operate on the implicit thread local Loop */
@@ -203,7 +204,7 @@ public:
             }
         });
         
-        /* Creates a "fake" route to handle the server initial handshake response. */
+        /* Creates a "fake" route to handle the server initial handshake successful response. */
         httpContext->onHttp("HTTP/1.1", "101", [this, webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
             
             /* If we have this header set, it's a websocket handshake response */
@@ -241,6 +242,42 @@ public:
             /* We do not need to check for any close or shutdown here as we immediately return from get handler */
 
         }, true);
+        
+        /* Creates a "fake" route to handle the server initial handshake NOT successful response. */
+        httpContext->onHttp("HTTP/1.1", "/*", [this, webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
+            
+            WebSocketContextData<SSL, false, UserData> *webSocketContextData = (WebSocketContextData<SSL, false, UserData> *) us_socket_context_ext(SSL, (us_socket_context_t *) webSocketContext);
+            if (webSocketContextData->closeHandler) {
+                
+                std::string_view status = req->getFullUrl();
+                std::string_view statusText = req->getHeader(status);
+                std::ostringstream oss;
+
+                oss << "Handshake refused by server: HTTP " << status << " " << statusText;
+
+                /*
+                HttpContextData<SSL> *httpContextData = this->httpContext->getSocketContextData();
+                if (
+                    httpContextData->reqRemaningData && 
+                    httpContextData->reqRemaningDataLen > 0
+                ) {
+                    oss << " > " << std::string_view{ httpContextData->reqRemaningData, httpContextData->reqRemaningDataLen } << "\n";
+                }
+                */
+
+                webSocketContextData->closeHandler(
+                    (WebSocket<SSL, false, UserData> *) res,
+                    1002,
+                    oss.str()
+                );
+            }
+
+            /* Close this socket */
+            us_socket_shutdown(SSL, (us_socket_t *) res);
+            /* Close any socket on HTTP errors */
+            us_socket_close(SSL, (us_socket_t *) res, 0, nullptr);
+
+        }, false);
         
         return std::move(static_cast<TemplatedClientApp &&>(*this));
     }

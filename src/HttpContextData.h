@@ -32,6 +32,7 @@ struct alignas(16) HttpContextData {
     template <bool> friend struct HttpContext;
     template <bool> friend struct HttpResponse;
     template <bool> friend struct TemplatedApp;
+    template <bool> friend struct TemplatedClientApp;
 private:
     std::vector<MoveOnlyFunction<void(HttpResponse<SSL> *, int)>> filterHandlers;
 
