@@ -257,6 +257,7 @@ public:
                 /* Calls rejected handshake handler */
                 std::string_view status = req->getFullUrl();
                 std::string_view statusText = req->getHeader(status);
+                HttpContextData<SSL> *httpContextData = this->httpContext->getSocketContextData();
                 std::string_view body { 
                     httpContextData->reqRemaningData, 
                     httpContextData->reqRemaningDataLen
