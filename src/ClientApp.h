@@ -93,6 +93,7 @@ public:
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view)> pong = nullptr;
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view, int, int)> subscription = nullptr;
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, int, std::string_view)> close = nullptr;
+        MoveOnlyFunction<void(std::string_view, std::string_view, std::string_view, HttpRequest *)> rejectedHandshake = nullptr;
     };
 
     /* Returns the SSL_CTX of this app, or nullptr. */
@@ -156,6 +157,7 @@ public:
         webSocketContext->getExt()->closeHandler = std::move(behavior.close);
         webSocketContext->getExt()->pingHandler = std::move(behavior.ping);
         webSocketContext->getExt()->pongHandler = std::move(behavior.pong);
+        webSocketContext->getExt()->rejectedHandshakeHandler = std::move(behavior.rejectedHandshake);
 
         /* Copy settings */
         webSocketContext->getExt()->maxPayloadLength = behavior.maxPayloadLength;
@@ -245,38 +247,27 @@ public:
         
         /* Creates a "fake" route to handle the server initial handshake NOT successful response. */
         httpContext->onHttp("HTTP/1.1", "/*", [this, webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
-            
-            WebSocketContextData<SSL, false, UserData> *webSocketContextData = (WebSocketContextData<SSL, false, UserData> *) us_socket_context_ext(SSL, (us_socket_context_t *) webSocketContext);
-            if (webSocketContextData->closeHandler) {
-                
-                std::string_view status = req->getFullUrl();
-                std::string_view statusText = req->getHeader(status);
-                std::ostringstream oss;
-
-                oss << "Handshake refused by server: HTTP " << status << " " << statusText;
-
-                /*
-                HttpContextData<SSL> *httpContextData = this->httpContext->getSocketContextData();
-                if (
-                    httpContextData->reqRemaningData && 
-                    httpContextData->reqRemaningDataLen > 0
-                ) {
-                    oss << " > " << std::string_view{ httpContextData->reqRemaningData, httpContextData->reqRemaningDataLen } << "\n";
-                }
-                */
-
-                std::string closeReason = oss.str();
-                webSocketContextData->closeHandler(
-                    (WebSocket<SSL, false, UserData> *) res,
-                    1002,
-                    closeReason
-                );
-            }
-
             /* Close this socket */
             us_socket_shutdown(SSL, (us_socket_t *) res);
             /* Close any socket on HTTP errors */
             us_socket_close(SSL, (us_socket_t *) res, 0, nullptr);
+            
+            WebSocketContextData<SSL, false, UserData> *webSocketContextData = (WebSocketContextData<SSL, false, UserData> *) us_socket_context_ext(SSL, (us_socket_context_t *) webSocketContext);
+            if (webSocketContextData->rejectedHandshakeHandler) {
+                /* Calls rejected handshake handler */
+                std::string_view status = req->getFullUrl();
+                std::string_view statusText = req->getHeader(status);
+                std::string_view body { 
+                    httpContextData->reqRemaningData, 
+                    httpContextData->reqRemaningDataLen
+                };
+                webSocketContextData->rejectedHandshakeHandler(
+                    status, 
+                    statusText, 
+                    body, 
+                    req
+                );
+            }
 
         }, false);
         
