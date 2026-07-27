@@ -219,15 +219,26 @@ protected:
 
     /* Returns the remote IP address or empty string on failure */
     std::string_view getRemoteAddress() {
+#ifdef UWS_REMOTE_ADDRESS_USERSPACE
+        AsyncSocketData<SSL> *data = getAsyncSocketData();
+        return std::string_view(data->remoteAddress, (unsigned int) data->remoteAddressLength);
+#else
         static thread_local char buf[16];
         int ipLength = 16;
         us_socket_remote_address(SSL, (us_socket_t *) this, buf, &ipLength);
         return std::string_view(buf, (unsigned int) ipLength);
+#endif
     }
 
     /* Returns the text representation of IP */
     std::string_view getRemoteAddressAsText() {
         return addressAsText(getRemoteAddress());
+    }
+
+    /* Returns the remote port number or -1 on failure */
+    unsigned int getRemotePort() {
+        int port = us_socket_remote_port(SSL, (us_socket_t *) this);
+        return (unsigned int) port;
     }
 
     /* Write in three levels of prioritization: cork-buffer, syscall, socket-buffer. Always drain if possible.
@@ -336,7 +347,17 @@ protected:
                 loopData->corkOffset = 0;
 
                 if (failed) {
-                    /* We do not need to care for buffering here, write does that */
+                    /* If corked data fails to flush, and we have more data to write, immediately buffer it here 
+                     * since the above call to write excludes src */
+                    if (!optionally && src && length) {
+                        AsyncSocketData<SSL> *asyncSocketData = getAsyncSocketData();
+                        asyncSocketData->buffer.append(src, (size_t) length);
+
+                        /* We wrote to per socket buffer, so report success */
+                        return {length, true};
+                    }
+
+                    /* We do not need to care for buffering (of the corked data) here, write did that */
                     return {0, true};
                 }
             }

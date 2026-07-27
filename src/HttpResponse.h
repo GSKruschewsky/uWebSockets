@@ -1,5 +1,5 @@
 /*
- * Authored by Alex Hultman, 2018-2025.
+ * Authored by Alex Hultman, 2018-2026.
  * Intellectual property of third-party.
 
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -232,6 +232,10 @@ public:
 
     std::string_view getProxiedRemoteAddressAsText() {
         return Super::addressAsText(getProxiedRemoteAddress());
+    }
+
+    unsigned int getProxiedRemotePort() {
+        return getHttpResponseData()->proxyParser.getSourcePort();
     }
 #endif
 
@@ -522,6 +526,7 @@ public:
     /* See AsyncSocket */
     using Super::getRemoteAddress;
     using Super::getRemoteAddressAsText;
+    using Super::getRemotePort;
     using Super::getNativeHandle;
 
     /* Throttle reads and writes */
@@ -620,6 +625,25 @@ public:
         return this;
     }
 
+    /* Begin writing the response body. Useful for chunked encodings whose first chunk is not yet known */
+    void beginWrite() {
+        /* Write status if not already done */
+        writeStatus(HTTP_200_OK);
+
+        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+
+        if (!(httpResponseData->state & HttpResponseData<SSL>::HTTP_WRITE_CALLED)) {
+            /* Write mark on first call to write */
+            writeMark();
+
+            writeHeader("Transfer-Encoding", "chunked");
+            httpResponseData->state |= HttpResponseData<SSL>::HTTP_WRITE_CALLED;
+
+            /* Start of the body */
+            Super::write("\r\n", 2);
+        }
+    }
+
     /* End without a body (no content-length) or end with a spoofed content-length. */
     void endWithoutBody(std::optional<size_t> reportedContentLength = std::nullopt, bool closeConnection = false) {
         if (reportedContentLength.has_value()) {
@@ -681,6 +705,13 @@ public:
         return httpResponseData->offset;
     }
 
+    /* Get the remaining body length if set via content-length, UINT64_MAX if transfer-encoding is chunked, or 0 if no body */
+    uint64_t maxRemainingBodyLength() {
+        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+
+        return httpResponseData->maxRemainingBodyLength();
+    }
+
     /* If you are messing around with sendfile you might want to override the offset. */
     void overrideWriteOffset(uintmax_t offset) {
         HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
@@ -699,6 +730,9 @@ public:
     HttpResponse *cork(MoveOnlyFunction<void()> &&handler) {
         if (!Super::isCorked() && Super::canCork()) {
             LoopData *loopData = Super::getLoopData();
+            /* Remember our socket context so we can detect a WebSocket upgrade in the
+             * handler even when the poll realloc kept our address (see below). */
+            struct us_socket_context_t *preCorkContext = us_socket_context(SSL, (struct us_socket_t *) this);
             Super::cork();
             handler();
 
@@ -719,7 +753,11 @@ public:
 
             /* If we are no longer an HTTP socket then early return the new "this".
              * We don't want to even overwrite timeout as it is set in upgrade already. */
-            if (this != newCorkedSocket) {
+            /* The pointer check alone is not enough: us_socket_context_adopt_socket() can
+             * realloc the poll in place, leaving the upgraded WebSocket at our old address
+             * (this == newCorkedSocket). The socket context always changes on upgrade. */
+            if (this != newCorkedSocket ||
+                us_socket_context(SSL, (struct us_socket_t *) newCorkedSocket) != preCorkContext) {
                 return static_cast<HttpResponse *>(newCorkedSocket);
             }
 
@@ -767,6 +805,17 @@ public:
 
     /* Attach a read handler for data sent. Will be called with FIN set true if last segment. */
     void onData(MoveOnlyFunction<void(std::string_view, bool)> &&handler) {
+        if (handler) {
+            onDataV2([handler = std::move(handler)](std::string_view chunk, uint64_t maxRemainingBodyLength) mutable {
+                handler(chunk, maxRemainingBodyLength == 0);
+            });
+        } else {
+            onDataV2(nullptr);
+        }
+    }
+
+    /* Attach a read handler for data sent. Will be called with maxRemainingBodyLength. maxRemainingBodyLength == 0 is the same as isLast. */
+    void onDataV2(MoveOnlyFunction<void(std::string_view, uint64_t)> &&handler) {
         HttpResponseData<SSL> *data = getHttpResponseData();
         data->inStream = std::move(handler);
 

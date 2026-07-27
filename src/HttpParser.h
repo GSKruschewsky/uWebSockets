@@ -530,7 +530,7 @@ private:
         void *reserved, 
         HttpRequest *req, 
         MoveOnlyFunction<void *(void *, HttpRequest *, char *, unsigned int)> &requestHandler, 
-        MoveOnlyFunction<void *(void *, std::string_view, bool)> &dataHandler
+        MoveOnlyFunction<void *(void *, std::string_view, uint64_t)> &dataHandler
     ) {
 
         /* How much data we CONSUMED (to throw away) */
@@ -629,7 +629,7 @@ private:
                     /* Go ahead and parse it (todo: better heuristics for emitting FIN to the app level) */
                     std::string_view dataToConsume(data, length);
                     for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
-                        dataHandler(user, chunk, chunk.length() == 0);
+                        dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
                     }
                     if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
                         return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
@@ -648,7 +648,7 @@ private:
 
                 if (!CONSUME_MINIMALLY) {
                     unsigned int emittable = (unsigned int) std::min<uint64_t>(remainingStreamingBytes, length);
-                    dataHandler(user, std::string_view(data, emittable), emittable == remainingStreamingBytes);
+                    dataHandler(user, std::string_view(data, emittable), remainingStreamingBytes - emittable);
                     remainingStreamingBytes -= emittable;
 
                     data += emittable;
@@ -657,7 +657,7 @@ private:
                 }
             } else {
                 /* If we came here without a body; emit an empty data chunk to signal no data */
-                dataHandler(user, {}, true);
+                dataHandler(user, {}, 0);
             }
 
             /* Consume minimally should break as easrly as possible */
@@ -679,7 +679,7 @@ public:
         void *user, 
         void *reserved, 
         MoveOnlyFunction<void *(void *, HttpRequest *, char *, unsigned int)> &&requestHandler, 
-        MoveOnlyFunction<void *(void *, std::string_view, bool)> &&dataHandler
+        MoveOnlyFunction<void *(void *, std::string_view, uint64_t)> &&dataHandler
     ) {
 
         /* This resets BloomFilter by construction, but later we also reset it again.
@@ -692,7 +692,7 @@ public:
             if (isParsingChunkedEncoding(remainingStreamingBytes)) {
                 std::string_view dataToConsume(data, length);
                 for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
-                    dataHandler(user, chunk, chunk.length() == 0);
+                    dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
                 }
                 if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
                     return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
@@ -703,11 +703,11 @@ public:
                 // this is exactly the same as below!
                 // todo: refactor this
                 if (remainingStreamingBytes >= length) {
-                    void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes == length);
+                    void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes - length);
                     remainingStreamingBytes -= length;
                     return {0, returnedUser};
                 } else {
-                    void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), true);
+                    void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), 0);
 
                     data += (unsigned int) remainingStreamingBytes;
                     length -= (unsigned int) remainingStreamingBytes;
@@ -749,7 +749,7 @@ public:
                     if (isParsingChunkedEncoding(remainingStreamingBytes)) {
                         std::string_view dataToConsume(data, length);
                         for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
-                            dataHandler(user, chunk, chunk.length() == 0);
+                            dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
                         }
                         if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
                             return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
@@ -759,11 +759,11 @@ public:
                     } else {
                         // this is exactly the same as above!
                         if (remainingStreamingBytes >= (unsigned int) length) {
-                            void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes == (unsigned int) length);
+                            void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes - (unsigned int) length);
                             remainingStreamingBytes -= length;
                             return {0, returnedUser};
                         } else {
-                            void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), true);
+                            void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), 0);
 
                             data += (unsigned int) remainingStreamingBytes;
                             length -= (unsigned int) remainingStreamingBytes;
