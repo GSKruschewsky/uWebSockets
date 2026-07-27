@@ -276,8 +276,18 @@ public:
     }
 
     TemplatedClientApp &&connect(std::string url) {
+        /* Starting a new connection cycle: re-arm the handshake. 'handshakeSent'
+         * dedups the handshake among the filter lambdas registered by ws() calls
+         * (all of them fire per socket open), so it must be armed once per
+         * connection attempt. The filter's own reset (event == -1) only covers
+         * sockets closed while still owned by the HTTP context — after a
+         * successful 101 upgrade the socket belongs to the WebSocket context, so
+         * a normal WebSocket close leaves the flag set and, without this reset,
+         * any further connect() would establish TCP but never send a handshake. */
+        handshakeSent = false;
+
         /* Parses the URL setting "host", "path" and "port" */
-    
+
         // Check protocol and validate against SSL setting
         if (url.rfind("wss://", 0) == 0) {
             if (!SSL) {
