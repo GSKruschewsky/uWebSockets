@@ -38,6 +38,11 @@ private:
 
     MoveOnlyFunction<void(const char *hostname)> missingServerNameHandler;
 
+    /* Client-side only: invoked when an outgoing connection fails before it opens
+     * (refused, unreachable, resolution failure). Errors at that stage reach neither
+     * on_open nor on_close, so they need their own channel to the app. */
+    MoveOnlyFunction<void(int)> clientConnectErrorHandler = nullptr;
+
     struct RouterData {
         HttpResponse<SSL> *httpResponse;
         HttpRequest *httpRequest;

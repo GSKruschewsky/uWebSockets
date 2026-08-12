@@ -56,6 +56,21 @@ public:
 
     TemplatedClientApp(ClientSocketContextOptions options = {}) {
         httpContext = HttpContext<SSL>::create(Loop::get(), options);
+
+        if (httpContext) {
+            /* A connect that fails before opening (refused, unreachable) reaches
+             * neither on_open nor on_close — uSockets delivers it here. Without a
+             * registered handler uSockets has nowhere to report the failure. Note
+             * that the socket is a dead semi-socket: its ext is uninitialized, so
+             * only the context may be touched. */
+            us_socket_context_on_connect_error(SSL, (struct us_socket_context_t *) httpContext, [](struct us_socket_t *s, int code) {
+                HttpContextData<SSL> *httpContextData = HttpContext<SSL>::getSocketContextDataS(s);
+                if (httpContextData->clientConnectErrorHandler) {
+                    httpContextData->clientConnectErrorHandler(code);
+                }
+                return s;
+            });
+        }
     }
 
     bool constructorFailed() {
@@ -94,6 +109,10 @@ public:
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view, int, int)> subscription = nullptr;
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, int, std::string_view)> close = nullptr;
         MoveOnlyFunction<void(std::string_view, std::string_view, std::string_view, HttpRequest *)> rejectedHandshake = nullptr;
+        /* Called when the TCP connection itself fails (refused, unreachable, resolution
+         * failure) — before any of open/close/rejectedHandshake could apply. The code is
+         * the platform errno (e.g. ECONNREFUSED), or 0 when no attempt could be made. */
+        MoveOnlyFunction<void(int)> connectError = nullptr;
     };
 
     /* Returns the SSL_CTX of this app, or nullptr. */
@@ -158,6 +177,11 @@ public:
         webSocketContext->getExt()->pingHandler = std::move(behavior.ping);
         webSocketContext->getExt()->pongHandler = std::move(behavior.pong);
         webSocketContext->getExt()->rejectedHandshakeHandler = std::move(behavior.rejectedHandshake);
+
+        /* Connect errors happen while the socket still belongs to the HTTP context,
+         * so this handler lives there rather than on the WebSocket context. Must be
+         * taken out of behavior before the onHttp lambdas below move the rest of it. */
+        httpContext->getSocketContextData()->clientConnectErrorHandler = std::move(behavior.connectError);
 
         /* Copy settings */
         webSocketContext->getExt()->maxPayloadLength = behavior.maxPayloadLength;
@@ -331,8 +355,31 @@ public:
         }
 
         /* Connect the socket */
-        httpContext->connect(host.c_str(), port, 0, this->source_host);
-        
+        us_socket_t *connectSocket = httpContext->connect(host.c_str(), port, 0, this->source_host);
+
+        if (!connectSocket) {
+            /* The connect failed synchronously (name resolution or socket creation) so
+             * no socket exists to report the error through. Deliver the callback from a
+             * one-shot timer rather than synchronously or via Loop::defer: the caller
+             * observes every connect failure asynchronously and cannot recurse through
+             * a retrying handler, while the timer (unlike a deferred lambda) is a poll
+             * that keeps the loop alive until delivery. The context pointer is carried
+             * in the timer ext since the app itself may be moved by the builder chain. */
+            struct us_timer_t *connectErrorTimer = us_create_timer((struct us_loop_t *) Loop::get(), 0, sizeof(HttpContext<SSL> *));
+            *(HttpContext<SSL> **) us_timer_ext(connectErrorTimer) = httpContext;
+            us_timer_set(connectErrorTimer, [](struct us_timer_t *t) {
+                HttpContext<SSL> *localHttpContext = *(HttpContext<SSL> **) us_timer_ext(t);
+                us_timer_close(t);
+
+                HttpContextData<SSL> *httpContextData = localHttpContext->getSocketContextData();
+                if (httpContextData->clientConnectErrorHandler) {
+                    httpContextData->clientConnectErrorHandler(0);
+                }
+            }, 1, 0);
+
+            return std::move(static_cast<TemplatedClientApp &&>(*this));
+        }
+
         /* Set client side SNI (It will do nothing if not 'SSL') */
         us_socket_context_set_host_name(SSL, (struct us_socket_context_t *) httpContext, host.c_str());
 
