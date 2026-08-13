@@ -43,6 +43,12 @@ private:
      * on_open nor on_close, so they need their own channel to the app. */
     MoveOnlyFunction<void(int)> clientConnectErrorHandler = nullptr;
 
+    /* Client-side only: catch-all for connect attempts that die without a parsed
+     * rejection - refused with no connectError registered, reset, timed out, or an
+     * unparseable response. Receives whatever raw response bytes were buffered.
+     * Guarantees every failed attempt reaches the app exactly once. */
+    MoveOnlyFunction<void(std::string_view)> clientHandshakeAbortedHandler = nullptr;
+
     struct RouterData {
         HttpResponse<SSL> *httpResponse;
         HttpRequest *httpRequest;

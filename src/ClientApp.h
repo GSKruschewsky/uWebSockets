@@ -67,6 +67,10 @@ public:
                 HttpContextData<SSL> *httpContextData = HttpContext<SSL>::getSocketContextDataS(s);
                 if (httpContextData->clientConnectErrorHandler) {
                     httpContextData->clientConnectErrorHandler(code);
+                } else if (httpContextData->clientHandshakeAbortedHandler) {
+                    /* No connectError registered: report through rejectedHandshake so the
+                     * failure is never silent */
+                    httpContextData->clientHandshakeAbortedHandler(std::string_view("", 0));
                 }
                 return s;
             });
@@ -183,6 +187,19 @@ public:
          * taken out of behavior before the onHttp lambdas below move the rest of it. */
         httpContext->getSocketContextData()->clientConnectErrorHandler = std::move(behavior.connectError);
 
+        /* Catch-all for attempts that die without a parsed rejection (refused with no
+         * connectError registered, reset, timed out, or an unparseable response): route
+         * them to rejectedHandshake so every failed connect reaches the app. Empty
+         * status/text mean "no HTTP response"; body carries any raw bytes received. */
+        httpContext->getSocketContextData()->clientHandshakeAbortedHandler = [webSocketContext](std::string_view rawResponse) {
+            WebSocketContextData<SSL, false, UserData> *webSocketContextData = (WebSocketContextData<SSL, false, UserData> *) us_socket_context_ext(SSL, (us_socket_context_t *) webSocketContext);
+            if (webSocketContextData->rejectedHandshakeHandler) {
+                /* There is no request to expose; hand out an inert empty one */
+                HttpRequest emptyRequest;
+                webSocketContextData->rejectedHandshakeHandler(std::string_view("", 0), std::string_view("", 0), rawResponse, &emptyRequest);
+            }
+        };
+
         /* Copy settings */
         webSocketContext->getExt()->maxPayloadLength = behavior.maxPayloadLength;
         webSocketContext->getExt()->maxBackpressure = behavior.maxBackpressure;
@@ -271,28 +288,34 @@ public:
         
         /* Creates a "fake" route to handle the server initial handshake NOT successful response. */
         httpContext->onHttp("HTTP/1.1", "/*", [this, webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
+            /* This is the one terminal callback for this attempt; the close fallback
+             * below (triggered by us_socket_close) must stay quiet */
+            HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, (us_socket_t *) res);
+            httpResponseData->clientCallbackDelivered = true;
+
+            WebSocketContextData<SSL, false, UserData> *webSocketContextData = (WebSocketContextData<SSL, false, UserData> *) us_socket_context_ext(SSL, (us_socket_context_t *) webSocketContext);
+            if (webSocketContextData->rejectedHandshakeHandler) {
+                /* Deliver while the socket is still alive: status, headers and body are
+                 * views into this socket's parser buffers and die with it on close */
+                std::string_view status = req->getFullUrl();
+                std::string_view statusText = req->getHeader(status);
+                HttpContextData<SSL> *httpContextData = this->httpContext->getSocketContextData();
+                std::string_view body {
+                    httpContextData->reqRemaningData,
+                    httpContextData->reqRemaningDataLen
+                };
+                webSocketContextData->rejectedHandshakeHandler(
+                    status,
+                    statusText,
+                    body,
+                    req
+                );
+            }
+
             /* Close this socket */
             us_socket_shutdown(SSL, (us_socket_t *) res);
             /* Close any socket on HTTP errors */
             us_socket_close(SSL, (us_socket_t *) res, 0, nullptr);
-            
-            WebSocketContextData<SSL, false, UserData> *webSocketContextData = (WebSocketContextData<SSL, false, UserData> *) us_socket_context_ext(SSL, (us_socket_context_t *) webSocketContext);
-            if (webSocketContextData->rejectedHandshakeHandler) {
-                /* Calls rejected handshake handler */
-                std::string_view status = req->getFullUrl();
-                std::string_view statusText = req->getHeader(status);
-                HttpContextData<SSL> *httpContextData = this->httpContext->getSocketContextData();
-                std::string_view body { 
-                    httpContextData->reqRemaningData, 
-                    httpContextData->reqRemaningDataLen
-                };
-                webSocketContextData->rejectedHandshakeHandler(
-                    status, 
-                    statusText, 
-                    body, 
-                    req
-                );
-            }
 
         }, false);
         
@@ -374,6 +397,9 @@ public:
                 HttpContextData<SSL> *httpContextData = localHttpContext->getSocketContextData();
                 if (httpContextData->clientConnectErrorHandler) {
                     httpContextData->clientConnectErrorHandler(0);
+                } else if (httpContextData->clientHandshakeAbortedHandler) {
+                    /* No connectError registered: report through rejectedHandshake */
+                    httpContextData->clientHandshakeAbortedHandler(std::string_view("", 0));
                 }
             }, 1, 0);
 

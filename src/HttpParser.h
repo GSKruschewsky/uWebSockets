@@ -64,13 +64,15 @@ private:
     struct Header {
         std::string_view key, value;
     } headers[UWS_HTTP_MAX_HEADERS_COUNT];
-    bool ancientHttp;
-    unsigned int querySeparator;
-    bool didYield;
+    bool ancientHttp = false;
+    unsigned int querySeparator = 0;
+    bool didYield = false;
     BloomFilter bf;
     std::pair<int, std::string_view *> currentParameters;
     std::map<std::string, unsigned short, std::less<>> *currentParameterOffsets = nullptr;
-    bool handshakeResponse;
+    /* True while parsing a client socket's handshake response. Initialized per parse
+     * from HttpParser::expectsResponse - the socket decides, never the data. */
+    bool handshakeResponse = false;
 
 public:
     bool isAncient() {
@@ -198,6 +200,24 @@ public:
 
 struct HttpParser {
 
+public:
+    /* Client sockets parse an HTTP response (the handshake reply) instead of requests.
+     * Set once when the socket opens (from uSockets' is_client) so that every
+     * response-vs-request decision is deterministic; it must never be inferred from
+     * the data itself. */
+    bool expectsResponse = false;
+
+    /* Client sockets deliver exactly one terminal callback per connect attempt
+     * (rejectedHandshake or connectError). Set once delivered so the close-time
+     * fallback does not deliver a second one. */
+    bool clientCallbackDelivered = false;
+
+    /* Whatever unparsed input is currently buffered (a partial request or response).
+     * Used to hand raw bytes to the failed-handshake fallback. */
+    std::string_view getBufferedData() {
+        return std::string_view(fallback.data(), fallback.length());
+    }
+
 private:
     std::string fallback;
     /* This guy really has only 30 bits since we reserve two highest bits to chunked encoding parsing state */
@@ -302,7 +322,7 @@ private:
         if (&data[1] == end) [[unlikely]] {
             return nullptr;
         }
-        if (data[0] == 32 && (data[1] == '/' || (data - start == 8 && *(uint64_t*)start == BSTR_HTTP_1_1))) [[likely]] {
+        if (data[0] == 32 && (data[1] == '/' || (handshakeResponse && data - start == 8 && *(uint64_t*)start == BSTR_HTTP_1_1))) [[likely]] {
             header.key = {start, (size_t) (data - start)};
             data++;
             /* Scan for less than 33 (catches post padded CR and fails) */
@@ -314,17 +334,23 @@ private:
                     while (*(unsigned char *)data > 32) data++;
                     /* Now we stand on space */
                     header.value = {start, (size_t) (data - start)};
-                    /* Check that the following is switching protocols */
-                    if (data + 22 >= end) {
-                        /* Whatever we have must be part of the http status string */
-                        if (memcmp(" Switching Protocols\r\n", data, std::min<unsigned int>(22, (unsigned int) (end - data))) == 0) {
-                            return nullptr;
+                    /* A client parser consumes a status line, not a request line. It never
+                     * hard-fails on a partial line: whatever cannot be decided yet gets
+                     * decided on a later parse, once more bytes have been buffered. */
+                    if (handshakeResponse) {
+                        if (data + 22 >= end) {
+                            if (memcmp(" Switching Protocols\r\n", data, (size_t) (end - data)) == 0) {
+                                /* May still become a 101; wait for the rest of the line */
+                                return nullptr;
+                            }
+                            /* Cannot be a 101; parse as a rejection below */
+                        } else if (memcmp(" Switching Protocols\r\n", data, 22) == 0) {
+                            return data + 22;
                         }
-                        return (char *) 0x1;
-                    }
-                    if (memcmp(" Switching Protocols\r\n", data, 22) == 0) {
-                        handshakeResponse = true;
-                        return data + 22;
+                        /* Not a 101: rewind onto the status code so it re-parses as pseudo
+                         * headers, delivering the complete rejection (status, text, headers,
+                         * body) to the app once the full response has arrived */
+                        return data - header.value.size();
                     }
                     /* Check that the following is http 1.1 */
                     if (data + 11 >= end) {
@@ -335,19 +361,11 @@ private:
                         return (char *) 0x1;
                     }
                     if (memcmp(" HTTP/1.1\r\n", data, 11) == 0) {
-                        handshakeResponse = false;
                         return data + 11;
                     }
                     /* If we stand at the post padded CR, we have fragmented input so try again later */
                     if (data[0] == '\r') {
                         return nullptr;
-                    }
-                    /* If it is a 'handshakeResponse' error, we fully parse it... */
-                    if (
-                        handshakeResponse && 
-                        memcmp("HTTP/1.1", header.key.data(), 8) == 0
-                    ) {
-                        return data - header.value.size();
                     }
 
                     /* This is an error */
@@ -411,23 +429,12 @@ private:
         if ((char *) 2 > (postPaddedBuffer = consumeRequestLine(postPaddedBuffer, end, headers[0], handshakeResponse))) {
             /* Error - invalid request line */
 
-            /* Handle handshake response errors */
+            /* A client parser waits (nullptr) on fragmented lines - the unconsumed bytes
+             * get buffered and re-parsed when more arrive. A definite error (0x1: the
+             * data cannot be the start of an HTTP response) closes the socket, and the
+             * close fallback reports the failed handshake to the app exactly once. */
             if (handshakeResponse) {
-                if (*headers[0].value.data() == '4') {
-                    err = HTTP_RESPONSE_ERROR_4XX_CLIENT_ERROR;
-                } else if (*headers[0].value.data() == '5') {
-                    err = HTTP_RESPONSE_ERROR_5XX_SERVER_ERROR;
-                } else {
-                    err = HTTP_RESPONSE_UNKNOW_ERROR;
-                }
-
-                std::cerr << 
-                    "[E] WebScoket server did not accepted the handshake request." << 
-                    "Server response (An incomplete response here is not a problem):\n" << 
-                    std::string_view{headers[0].value.data(), (size_t)(end - headers[0].value.data())} << 
-                    '\n' << 
-                std::endl;
-                
+                err = (postPaddedBuffer == nullptr) ? 0 : HTTP_RESPONSE_UNKNOW_ERROR;
                 return 0;
             }
 
@@ -685,6 +692,10 @@ public:
         /* This resets BloomFilter by construction, but later we also reset it again.
          * Optimize this to skip resetting twice (req could be made global) */
         HttpRequest req;
+
+        /* Client sockets parse a response; server sockets parse requests. Decided by
+         * the socket (set at open), never by the data or by whatever was on the stack */
+        req.handshakeResponse = expectsResponse;
 
         if (remainingStreamingBytes) {
 

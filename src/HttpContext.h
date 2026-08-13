@@ -70,12 +70,17 @@ private:
     /* Init the HttpContext by registering libusockets event handlers */
     HttpContext<SSL> *init() {
         /* Handle socket connections */
-        us_socket_context_on_open(SSL, getSocketContext(), [](us_socket_t *s, int /*is_client*/, char *ip, int ip_length) {
+        us_socket_context_on_open(SSL, getSocketContext(), [](us_socket_t *s, int is_client, char *ip, int ip_length) {
             /* Any connected socket should timeout until it has a request */
             us_socket_timeout(SSL, s, HTTP_IDLE_TIMEOUT_S);
 
             /* Init socket ext */
             new (us_socket_ext(SSL, s)) HttpResponseData<SSL>;
+
+            /* An outgoing (client) socket awaits an HTTP response rather than requests.
+             * The parser keys every response-vs-request decision off this, so it must be
+             * set before any data can arrive */
+            ((HttpResponseData<SSL> *) us_socket_ext(SSL, s))->expectsResponse = is_client != 0;
 
 #ifdef UWS_REMOTE_ADDRESS_USERSPACE
             /* Copy remote address into per-socket cache for later retrieval */
@@ -114,6 +119,18 @@ private:
             /* Signal broken HTTP request only if we have a pending request */
             if (httpResponseData->onAborted) {
                 httpResponseData->onAborted();
+            }
+
+            /* A client socket closing while still owned by the HTTP context means the
+             * connect attempt is dead (rejected, reset, timed out or an unparseable
+             * response). Deliver the failure to the app unless a terminal callback was
+             * already delivered for this socket - no failure may ever be silent. */
+            if (httpResponseData->expectsResponse && !httpResponseData->clientCallbackDelivered) {
+                httpResponseData->clientCallbackDelivered = true;
+                if (httpContextData->clientHandshakeAbortedHandler) {
+                    /* Pass along whatever raw response bytes were buffered, if any */
+                    httpContextData->clientHandshakeAbortedHandler(httpResponseData->getBufferedData());
+                }
             }
 
             /* Destruct socket ext */
@@ -286,8 +303,11 @@ private:
             /* If we got fullptr that means the parser wants us to close the socket from error (same as calling the errorHandler) */
             if (returnedSocket == FULLPTR) {
 
-                /* If its a server error, handle it properly */
-                if (err <= 3) {
+                /* Server sockets answer parser errors with an error page. Client sockets
+                 * never write one back to the server - closing below reports the failed
+                 * handshake to the app through the close fallback. Note that err values
+                 * above 3 have no entry in httpErrorResponses. */
+                if (err <= 3 && !httpResponseData->expectsResponse) {
                     /* For errors, we only deliver them "at most once". We don't care if they get halfways delivered or not. */
                     us_socket_write(SSL, s, httpErrorResponses[err].data(), (int) httpErrorResponses[err].length(), false);
                 }
