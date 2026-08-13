@@ -547,11 +547,19 @@ public:
 
     /* Write initial handshake request */
     HttpResponse *writeInitHandshake(
-        std::string_view host, 
-        std::string_view path, 
+        std::string_view host,
+        std::string_view path,
         const char *webSocketKey,
         const std::unordered_map<std::string, std::string> &headers
     ) {
+
+        /* Send the whole handshake as one TCP segment. Uncorked, every write below is
+         * its own segment ("GET " alone in the first!) and the fragmented request line
+         * needlessly stresses the peer's parser. */
+        bool wasCorked = Super::isCorked();
+        if (!wasCorked && Super::canCork()) {
+            Super::cork();
+        }
 
         Super::write("GET ", 4);
         Super::write(path.data(), (int)path.size());
@@ -575,7 +583,11 @@ public:
         }
 
         Super::write("\r\n", 2);
-        
+
+        if (!wasCorked && Super::isCorked()) {
+            Super::uncork();
+        }
+
         return this;
     }
 
