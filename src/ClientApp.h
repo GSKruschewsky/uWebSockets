@@ -99,6 +99,10 @@ public:
         /* Custom aditional options (Client-specific) */
         bool skipUTF8Validation = false;
         bool onlyLastPacketFrame = false;
+        /* Kernel receive timestamps (Linux SO_TIMESTAMPING) on this client's sockets: while a
+         * message handler runs, us_loop_last_rx_timestamp() on the loop returns the stamp of the
+         * read that carried it. Off by default, which leaves the receive path untouched. */
+        bool rxTimestamps = false;
         std::unordered_map<std::string, std::string> customHeaders = {};
         char *localAddress = nullptr;
         /* Maximum socket lifetime in minutes before forced closure (defaults to disabled) */
@@ -212,6 +216,12 @@ public:
         /* Custom aditional options (Client-specific) */
         webSocketContext->getExt()->skipUTF8Validation = behavior.skipUTF8Validation;
         webSocketContext->getExt()->onlyLastPacketFrame = behavior.onlyLastPacketFrame;
+        webSocketContext->getExt()->rxTimestamps = behavior.rxTimestamps;
+        /* Receive timestamps are requested at connect time, which happens on the HTTP context;
+         * the flag then rides on the socket into this WebSocket context after the upgrade */
+        if (behavior.rxTimestamps) {
+            us_socket_context_set_rx_timestamps(SSL, (struct us_socket_context_t *) httpContext, 1);
+        }
         this->customHeaders = std::move(behavior.customHeaders);
         this->source_host = behavior.localAddress;
 

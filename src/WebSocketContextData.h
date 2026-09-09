@@ -83,6 +83,7 @@ public:
     /* Custom aditional options */
     bool skipUTF8Validation = false;
     bool onlyLastPacketFrame = false;
+    bool rxTimestamps = false;
 
     /* These are calculated on creation */
     std::pair<unsigned short, unsigned short> idleTimeoutComponents;
