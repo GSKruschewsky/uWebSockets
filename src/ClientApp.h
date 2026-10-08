@@ -49,6 +49,11 @@ private:
     int port;
     std::string path;
     std::string host;
+    /* The name the server is addressed by: the Host header of the upgrade request and the
+     * TLS SNI. It is the URL's host unless connect() was given a hostname, which lets the
+     * caller resolve the name itself (off the loop) and dial the address while the server
+     * still sees the name it serves. */
+    std::string hostHeader;
     char *source_host;
     std::unordered_map<std::string, std::string> customHeaders;
 
@@ -243,7 +248,7 @@ public:
                     WebSocketHandshake::generateKey(this->webSocketKey);
 
                     res->writeInitHandshake(
-                        this->host, 
+                        this->hostHeader, 
                         this->path, 
                         this->webSocketKey,
                         this->customHeaders
@@ -332,7 +337,10 @@ public:
         return std::move(static_cast<TemplatedClientApp &&>(*this));
     }
 
-    TemplatedClientApp &&connect(std::string url) {
+    /* 'hostname', when given, is sent as the Host header and the SNI in place of the URL's
+     * host: the URL may then carry an address the caller resolved asynchronously. Resolution
+     * inside connect() (getaddrinfo) blocks the calling thread for the resolver's round trip. */
+    TemplatedClientApp &&connect(std::string url, std::string hostname = "") {
         /* Starting a new connection cycle: re-arm the handshake. 'handshakeSent'
          * dedups the handshake among the filter lambdas registered by ws() calls
          * (all of them fire per socket open), so it must be armed once per
@@ -386,6 +394,7 @@ public:
         } else {
             host = hostPort;
         }
+        hostHeader = hostname.empty() ? host : hostname;
 
         /* Connect the socket */
         us_socket_t *connectSocket = httpContext->connect(host.c_str(), port, 0, this->source_host);
@@ -417,7 +426,7 @@ public:
         }
 
         /* Set client side SNI (It will do nothing if not 'SSL') */
-        us_socket_context_set_host_name(SSL, (struct us_socket_context_t *) httpContext, host.c_str());
+        us_socket_context_set_host_name(SSL, (struct us_socket_context_t *) httpContext, hostHeader.c_str());
 
         return std::move(static_cast<TemplatedClientApp &&>(*this));
     }
