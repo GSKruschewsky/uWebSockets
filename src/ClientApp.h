@@ -5,6 +5,7 @@
 #include <charconv>
 #include <string_view>
 #include <sstream>
+#include <cerrno>
 
 /* An app is a convenience wrapper of some of the most used fuctionalities and allows a
  * builder-pattern kind of init. Apps operate on the implicit thread local Loop */
@@ -16,6 +17,14 @@
 #include "PerMessageDeflate.h"
 
 namespace uWS {
+
+/* connectError codes. A positive code is the platform's socket error (errno / WSAGetLastError:
+ * ECONNREFUSED, ENETUNREACH, ETIMEDOUT ...). A code at or below CONNECT_ERROR_RESOLVE_BASE is a failed
+ * name lookup carrying the getaddrinfo error: connectErrorResolveCode(code) gives the EAI_* value
+ * (EAI_NONAME, EAI_AGAIN ...). 0 means the attempt could not be started and its cause could not be read. */
+static constexpr int CONNECT_ERROR_RESOLVE_BASE = LIBUS_CONNECT_ERROR_RESOLVE_BASE;
+static inline bool isConnectErrorResolve(int code) { return LIBUS_CONNECT_ERROR_IS_RESOLVE(code); }
+static inline int connectErrorResolveCode(int code) { return LIBUS_CONNECT_ERROR_RESOLVE_CODE(code); }
 
     /* This one matches us_socket_context_options_t but has default values */
     struct ClientSocketContextOptions {
@@ -49,6 +58,11 @@ private:
     int port;
     std::string path;
     std::string host;
+    /* The name the server is addressed by: the Host header of the upgrade request and the
+     * TLS SNI. It is the URL's host unless connect() was given a hostname, which lets the
+     * caller resolve the name itself (off the loop) and dial the address while the server
+     * still sees the name it serves. */
+    std::string hostHeader;
     char *source_host;
     std::unordered_map<std::string, std::string> customHeaders;
 
@@ -243,7 +257,7 @@ public:
                     WebSocketHandshake::generateKey(this->webSocketKey);
 
                     res->writeInitHandshake(
-                        this->host, 
+                        this->hostHeader, 
                         this->path, 
                         this->webSocketKey,
                         this->customHeaders
@@ -332,7 +346,12 @@ public:
         return std::move(static_cast<TemplatedClientApp &&>(*this));
     }
 
-    TemplatedClientApp &&connect(std::string url) {
+    /* A numeric host connects synchronously; a name is resolved by uSockets on a resolver thread
+     * (the loop is never blocked) and the connect is finished when the lookup completes, so a
+     * failed lookup arrives through connectError with a code in the CONNECT_ERROR_RESOLVE_BASE
+     * range. 'hostname', when given, is sent as the Host header and the SNI in place of the URL's
+     * host, for callers that dial an address they resolved themselves. */
+    TemplatedClientApp &&connect(std::string url, std::string hostname = "") {
         /* Starting a new connection cycle: re-arm the handshake. 'handshakeSent'
          * dedups the handshake among the filter lambdas registered by ws() calls
          * (all of them fire per socket open), so it must be armed once per
@@ -386,27 +405,44 @@ public:
         } else {
             host = hostPort;
         }
+        hostHeader = hostname.empty() ? host : hostname;
 
-        /* Connect the socket */
+        /* Connect the socket. uSockets returns null only when the attempt could not be started
+         * (a numeric host whose socket/bind/connect failed at once, or no resolver thread) and
+         * discards the error itself, so the platform error is read back here right after the
+         * call, with the slot cleared first so a stale value is not mistaken for this failure.
+         * Best effort: 0 when nothing was left behind. */
+#ifdef _WIN32
+        WSASetLastError(0);
+#else
+        errno = 0;
+#endif
         us_socket_t *connectSocket = httpContext->connect(host.c_str(), port, 0, this->source_host);
 
         if (!connectSocket) {
-            /* The connect failed synchronously (name resolution or socket creation) so
-             * no socket exists to report the error through. Deliver the callback from a
+#ifdef _WIN32
+            int connectError = WSAGetLastError();
+#else
+            int connectError = errno;
+#endif
+            /* No socket exists to report the error through. Deliver the callback from a
              * one-shot timer rather than synchronously or via Loop::defer: the caller
              * observes every connect failure asynchronously and cannot recurse through
              * a retrying handler, while the timer (unlike a deferred lambda) is a poll
-             * that keeps the loop alive until delivery. The context pointer is carried
-             * in the timer ext since the app itself may be moved by the builder chain. */
-            struct us_timer_t *connectErrorTimer = us_create_timer((struct us_loop_t *) Loop::get(), 0, sizeof(HttpContext<SSL> *));
-            *(HttpContext<SSL> **) us_timer_ext(connectErrorTimer) = httpContext;
+             * that keeps the loop alive until delivery. The context pointer and the error
+             * are carried in the timer ext since the app itself may be moved by the
+             * builder chain. */
+            struct ConnectErrorTimerData { HttpContext<SSL> *httpContext; int code; };
+            struct us_timer_t *connectErrorTimer = us_create_timer((struct us_loop_t *) Loop::get(), 0, sizeof(ConnectErrorTimerData));
+            *(ConnectErrorTimerData *) us_timer_ext(connectErrorTimer) = { httpContext, connectError < 0 ? 0 : connectError };
             us_timer_set(connectErrorTimer, [](struct us_timer_t *t) {
-                HttpContext<SSL> *localHttpContext = *(HttpContext<SSL> **) us_timer_ext(t);
+                ConnectErrorTimerData data = *(ConnectErrorTimerData *) us_timer_ext(t);
+                HttpContext<SSL> *localHttpContext = data.httpContext;
                 us_timer_close(t);
 
                 HttpContextData<SSL> *httpContextData = localHttpContext->getSocketContextData();
                 if (httpContextData->clientConnectErrorHandler) {
-                    httpContextData->clientConnectErrorHandler(0);
+                    httpContextData->clientConnectErrorHandler(data.code);
                 } else if (httpContextData->clientHandshakeAbortedHandler) {
                     /* No connectError registered: report through rejectedHandshake */
                     httpContextData->clientHandshakeAbortedHandler(std::string_view("", 0));
@@ -417,7 +453,7 @@ public:
         }
 
         /* Set client side SNI (It will do nothing if not 'SSL') */
-        us_socket_context_set_host_name(SSL, (struct us_socket_context_t *) httpContext, host.c_str());
+        us_socket_context_set_host_name(SSL, (struct us_socket_context_t *) httpContext, hostHeader.c_str());
 
         return std::move(static_cast<TemplatedClientApp &&>(*this));
     }
