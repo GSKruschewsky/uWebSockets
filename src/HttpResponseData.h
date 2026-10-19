@@ -32,6 +32,7 @@ template <bool SSL>
 struct HttpResponseData : AsyncSocketData<SSL>, HttpParser {
     template <bool> friend struct HttpResponse;
     template <bool> friend struct HttpContext;
+    template <bool> friend struct TemplatedClientApp;
 
     /* When we are done with a response we mark it like so */
     void markDone() {
@@ -109,6 +110,13 @@ private:
 
     /* Let's track number of bytes since last timeout reset in data handler */
     unsigned int received_bytes_per_timeout = 0;
+
+    /* Client only: the WebSocket handshake belongs to the socket that carries it. Every ws()
+     * filter fires per socket open, so the flag dedups them per socket (not per app, where an
+     * overlapping attempt would reset or inherit it), and the key the server must echo back
+     * in Sec-WebSocket-Accept is the one this socket sent. */
+    bool clientHandshakeSent = false;
+    char clientWebSocketKey[24] = {};
 
     /* Current state (content-length sent, status sent, write called, etc */
     int state = 0;

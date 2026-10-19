@@ -51,9 +51,6 @@ struct TemplatedClientApp {
 private:
     /* The app always owns at least one http context, but creates websocket contexts on demand */
     HttpContext<SSL> *httpContext;
-    
-    char webSocketKey[24];
-    bool handshakeSent = false;
 
     int port;
     std::string path;
@@ -279,33 +276,31 @@ public:
          * Filter is called only when the connection opens (event = 1) or 
          * closes (event = -1) of the socket. So we set a filter to send 
          * the initial websocket handshake once the server connection is open. 
+         * Every ws() call registers one such filter and all of them fire per
+         * socket open: the per-socket flag lets exactly one send the handshake.
          */
         httpContext->filter([ this ](HttpResponse<SSL> *res, int event) {
             if (event == 1) {
                 /* Connection established */
-                if (!this->handshakeSent) {
-                    this->handshakeSent = true;
+                HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, (us_socket_t *) res);
+                if (!httpResponseData->clientHandshakeSent) {
+                    httpResponseData->clientHandshakeSent = true;
 
-                    /* Writes a new key to "this->webSocketKey" */
-                    WebSocketHandshake::generateKey(this->webSocketKey);
+                    /* Writes a new key for this socket */
+                    WebSocketHandshake::generateKey(httpResponseData->clientWebSocketKey);
 
                     res->writeInitHandshake(
                         this->hostHeader, 
                         this->path, 
-                        this->webSocketKey,
+                        httpResponseData->clientWebSocketKey,
                         this->customHeaders
                     );
-                }
-            } else if (event == -1) {
-                /* Connection closed */
-                if (this->handshakeSent) {
-                    this->handshakeSent = false;
                 }
             }
         });
         
         /* Creates a "fake" route to handle the server initial handshake successful response. */
-        httpContext->onHttp("HTTP/1.1", "101", [this, webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
+        httpContext->onHttp("HTTP/1.1", "101", [webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
             
             /* If we have this header set, it's a websocket handshake response */
             std::string_view secWebSocketAccept = req->getHeader("sec-websocket-accept");
@@ -315,8 +310,10 @@ public:
                 return;
             }
             
+            /* The accept value must answer the key this very socket sent */
+            HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, (us_socket_t *) res);
             char expectedSecWebSocketAccept[29] = {};
-            WebSocketHandshake::generate(this->webSocketKey, expectedSecWebSocketAccept);
+            WebSocketHandshake::generate(httpResponseData->clientWebSocketKey, expectedSecWebSocketAccept);
             if (memcmp(secWebSocketAccept.data(), expectedSecWebSocketAccept, 28) != 0) {
                 /* Tell the router that we did not handle this request */
                 req->setYield(true);
@@ -388,16 +385,6 @@ public:
      * std::runtime_error on a scheme/SSL mismatch, an invalid port, or a control character in
      * the URL or the hostname. */
     TemplatedClientApp &&connect(std::string url, std::string hostname = "") {
-        /* Starting a new connection cycle: re-arm the handshake. 'handshakeSent'
-         * dedups the handshake among the filter lambdas registered by ws() calls
-         * (all of them fire per socket open), so it must be armed once per
-         * connection attempt. The filter's own reset (event == -1) only covers
-         * sockets closed while still owned by the HTTP context — after a
-         * successful 101 upgrade the socket belongs to the WebSocket context, so
-         * a normal WebSocket close leaves the flag set and, without this reset,
-         * any further connect() would establish TCP but never send a handshake. */
-        handshakeSent = false;
-
         if (hasControlChars(url) || hasControlChars(hostname)) {
             throw std::runtime_error("WebSocket client URL and hostname must not contain control characters.");
         }
