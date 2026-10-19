@@ -131,9 +131,13 @@ public:
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view, int, int)> subscription = nullptr;
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, int, std::string_view)> close = nullptr;
         MoveOnlyFunction<void(std::string_view, std::string_view, std::string_view, HttpRequest *)> rejectedHandshake = nullptr;
-        /* Called when the TCP connection itself fails (refused, unreachable, resolution
-         * failure) — before any of open/close/rejectedHandshake could apply. The code is
-         * the platform errno (e.g. ECONNREFUSED), or 0 when no attempt could be made. */
+        /* Called when the connection itself fails (name lookup, refused, unreachable) before
+         * any of open/close/rejectedHandshake could apply. A positive code is the platform's
+         * socket error (errno / WSAGetLastError, e.g. ECONNREFUSED); a code at or below
+         * CONNECT_ERROR_RESOLVE_BASE (isConnectErrorResolve) is a failed lookup whose EAI_*
+         * value is connectErrorResolveCode(code); 0 means the attempt could not be started
+         * and its cause could not be read. Without this handler the same failures are
+         * reported through rejectedHandshake with an empty status. */
         MoveOnlyFunction<void(int)> connectError = nullptr;
     };
 

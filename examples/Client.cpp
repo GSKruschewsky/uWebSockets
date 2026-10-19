@@ -1,5 +1,5 @@
-// This example is broken and doesn't do anything. It is a potential interface for a future potential client.
-// There is no client support implemented in the library. This example is a placeholder.
+// WebSocket client example: connects, prints the first message and closes.
+// Every attempt ends in exactly one of open, rejectedHandshake or connectError.
 
 #include "ClientApp.h"
 #include <iostream>
@@ -25,8 +25,21 @@ int main() {
             },
             .close = [](auto */*ws*/, int code, std::string_view reason) {
                 std::cout << "Connection closed: " << code << " - " << reason << std::endl;
+            },
+            .rejectedHandshake = [](std::string_view status, std::string_view statusText, std::string_view /*body*/, uWS::HttpRequest */*req*/) {
+                std::cout << "Handshake rejected: " << status << " " << statusText << std::endl;
+            },
+            .connectError = [](int code) {
+                if (uWS::isConnectErrorResolve(code)) {
+                    std::cout << "Name lookup failed: EAI error " << uWS::connectErrorResolveCode(code) << std::endl;
+                } else {
+                    std::cout << "Connect failed: errno " << code << std::endl;
+                }
             }
         })
+        /* connect(url) resolves the URL's host on a resolver thread. connect(url, hostname) dials
+         * the URL's host (typically an address the caller resolved itself) while sending 'hostname'
+         * as the Host header and the TLS SNI, e.g. .connect("ws://127.0.0.1:3000", "localhost") */
         .connect("ws://localhost:3000")
         .run();
 
