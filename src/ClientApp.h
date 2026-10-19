@@ -63,6 +63,9 @@ private:
     std::string hostHeader;
     std::string sniHost;
     char *source_host;
+    /* Seconds a connect attempt (name lookup + TCP connect) may take before it fails with
+     * connectError(ETIMEDOUT); 0 leaves it to the kernel's own connect timeout */
+    unsigned short connectTimeout = 10;
 
     /* The request line and the Host header are written verbatim, so a CR, LF or other control
      * character in the URL or the hostname would let a caller forge headers */
@@ -147,6 +150,12 @@ public:
         char *localAddress = nullptr;
         /* Maximum socket lifetime in minutes before forced closure (defaults to disabled) */
         unsigned short maxLifetime = 0;
+        /* Seconds from connect() until the TCP connection must be established (the name lookup
+         * included); when it is not, the attempt fails with connectError(ETIMEDOUT). The HTTP
+         * idle timeout then covers the handshake response. 0 disables it, leaving a resolving
+         * or connecting socket to the resolver's and the kernel's own limits. The uSockets
+         * timer has a 4-second granularity. */
+        unsigned short connectTimeout = 10;
         MoveOnlyFunction<void(HttpResponse<SSL> *, HttpRequest *, struct us_socket_context_t *)> upgrade = nullptr;
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *)> open = nullptr;
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view, OpCode)> message = nullptr;
@@ -268,6 +277,7 @@ public:
         }
         this->customHeaders = std::move(behavior.customHeaders);
         this->source_host = behavior.localAddress;
+        this->connectTimeout = behavior.connectTimeout;
 
         /* Calculate idleTimeoutCompnents */
         webSocketContext->getExt()->calculateIdleTimeoutCompnents(behavior.idleTimeout);
@@ -501,6 +511,13 @@ public:
             }, 1, 0);
 
             return std::move(static_cast<TemplatedClientApp &&>(*this));
+        }
+
+        /* The attempt is live: bound the lookup and the TCP connect together. on_open re-arms
+         * the socket with the HTTP idle timeout; a socket that never opens is reported and
+         * discarded by the HTTP context's timeout handler. */
+        if (connectTimeout) {
+            us_socket_timeout(SSL, connectSocket, connectTimeout);
         }
 
         return std::move(static_cast<TemplatedClientApp &&>(*this));

@@ -28,6 +28,7 @@
 
 #include <string_view>
 #include <iostream>
+#include <cerrno>
 #include "MoveOnlyFunction.h"
 
 namespace uWS {
@@ -433,6 +434,24 @@ private:
 
         /* Handle socket timeouts, simply close them so to not confuse client with FIN */
         us_socket_context_on_timeout(SSL, getSocketContext(), [](us_socket_t *s) {
+
+            /* A client socket still resolving or connecting (the client app arms its connect
+             * timeout on it): nothing on it is initialized - no ext, no on_open yet - and no
+             * on_close will fire for it, so report the timeout through the context and drop
+             * the attempt. The handler may dial again from inside the callback. */
+            if (!us_socket_is_established(SSL, s)) {
+                HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
+                if (httpContextData->clientConnectErrorHandler) {
+#ifdef _WIN32
+                    httpContextData->clientConnectErrorHandler(WSAETIMEDOUT);
+#else
+                    httpContextData->clientConnectErrorHandler(ETIMEDOUT);
+#endif
+                } else if (httpContextData->clientHandshakeAbortedHandler) {
+                    httpContextData->clientHandshakeAbortedHandler(std::string_view("", 0));
+                }
+                return us_socket_close_connecting(SSL, s);
+            }
 
             /* Force close rather than gracefully shutdown and risk confusing the client with a complete download */
             AsyncSocket<SSL> *asyncSocket = (AsyncSocket<SSL> *) s;
