@@ -130,7 +130,7 @@ private:
                 httpResponseData->clientCallbackDelivered = true;
                 if (httpContextData->clientHandshakeAbortedHandler) {
                     /* Pass along whatever raw response bytes were buffered, if any */
-                    httpContextData->clientHandshakeAbortedHandler(httpResponseData->getBufferedData());
+                    httpContextData->clientHandshakeAbortedHandler(httpResponseData->getBufferedData(), httpResponseData->clientAttempt);
                 }
             }
 
@@ -441,14 +441,15 @@ private:
              * the attempt. The handler may dial again from inside the callback. */
             if (!us_socket_is_established(SSL, s)) {
                 HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
+                unsigned int attempt = httpContextData->dropClientAttempt(s);
                 if (httpContextData->clientConnectErrorHandler) {
 #ifdef _WIN32
-                    httpContextData->clientConnectErrorHandler(WSAETIMEDOUT);
+                    httpContextData->clientConnectErrorHandler(WSAETIMEDOUT, attempt);
 #else
-                    httpContextData->clientConnectErrorHandler(ETIMEDOUT);
+                    httpContextData->clientConnectErrorHandler(ETIMEDOUT, attempt);
 #endif
                 } else if (httpContextData->clientHandshakeAbortedHandler) {
-                    httpContextData->clientHandshakeAbortedHandler(std::string_view("", 0));
+                    httpContextData->clientHandshakeAbortedHandler(std::string_view("", 0), attempt);
                 }
                 return us_socket_close_connecting(SSL, s);
             }

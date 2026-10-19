@@ -21,6 +21,8 @@
 #include "HttpRouter.h"
 
 #include <vector>
+#include <unordered_map>
+#include <string>
 #include "MoveOnlyFunction.h"
 
 namespace uWS {
@@ -39,15 +41,39 @@ private:
     MoveOnlyFunction<void(const char *hostname)> missingServerNameHandler;
 
     /* Client-side only: invoked when an outgoing connection fails before it opens
-     * (refused, unreachable, resolution failure). Errors at that stage reach neither
-     * on_open nor on_close, so they need their own channel to the app. */
-    MoveOnlyFunction<void(int)> clientConnectErrorHandler = nullptr;
+     * (refused, unreachable, resolution failure, connect timeout). Errors at that stage
+     * reach neither on_open nor on_close, so they need their own channel to the app.
+     * The second argument is the attempt the failure belongs to (see clientAttempts). */
+    MoveOnlyFunction<void(int, unsigned int)> clientConnectErrorHandler = nullptr;
 
     /* Client-side only: catch-all for connect attempts that die without a parsed
      * rejection - refused with no connectError registered, reset, timed out, or an
-     * unparseable response. Receives whatever raw response bytes were buffered.
-     * Guarantees every failed attempt reaches the app exactly once. */
-    MoveOnlyFunction<void(std::string_view)> clientHandshakeAbortedHandler = nullptr;
+     * unparseable response. Receives whatever raw response bytes were buffered and
+     * the attempt. Guarantees every failed attempt reaches the app exactly once. */
+    MoveOnlyFunction<void(std::string_view, unsigned int)> clientHandshakeAbortedHandler = nullptr;
+
+    /* Client-side only: what each connect() attempt must send once its socket opens, keyed by
+     * the socket uSockets returned (stable from connect() through on_open, also while a name
+     * lookup is in flight). Attempts may overlap, so none of this can live on the app. An entry
+     * is consumed by the handshake filter on open and dropped on a connect error or timeout. */
+    struct ClientAttempt {
+        unsigned int id;
+        std::string hostHeader;
+        std::string path;
+        std::string sniHost;
+    };
+    std::unordered_map<us_socket_t *, ClientAttempt> clientAttempts;
+
+    /* Forgets the attempt of a socket that will never open and returns its id (0 if unknown) */
+    unsigned int dropClientAttempt(us_socket_t *s) {
+        auto it = clientAttempts.find(s);
+        if (it == clientAttempts.end()) {
+            return 0;
+        }
+        unsigned int id = it->second.id;
+        clientAttempts.erase(it);
+        return id;
+    }
 
     struct RouterData {
         HttpResponse<SSL> *httpResponse;

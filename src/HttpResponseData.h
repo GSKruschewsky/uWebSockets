@@ -117,6 +117,8 @@ private:
      * in Sec-WebSocket-Accept is the one this socket sent. */
     bool clientHandshakeSent = false;
     char clientWebSocketKey[24] = {};
+    /* The connect() attempt this socket belongs to (1-based per app; 0 = unknown) */
+    unsigned int clientAttempt = 0;
 
     /* Current state (content-length sent, status sent, write called, etc */
     int state = 0;

@@ -345,6 +345,9 @@ public:
         /* Move any backpressure out of HttpResponse */
         BackPressure backpressure(std::move(((AsyncSocketData<SSL> *) getHttpResponseData())->buffer));
 
+        /* The attempt follows the socket into its WebSocket life */
+        unsigned int clientAttempt = getHttpResponseData()->clientAttempt;
+
         /* Destroy HttpResponseData */
         getHttpResponseData()->~HttpResponseData();
 
@@ -362,6 +365,7 @@ public:
 
         /* Initialize websocket with any moved backpressure intact */
         webSocket->init(perMessageDeflate, compressOptions, std::move(backpressure));
+        ((WebSocketData *) us_socket_ext(SSL, (us_socket_t *) webSocket))->clientAttempt = clientAttempt;
 
         /* We should only mark this if inside the parser; if upgrading "async" we cannot set this */
         HttpContextData<SSL> *httpContextData = httpContext->getSocketContextData();
