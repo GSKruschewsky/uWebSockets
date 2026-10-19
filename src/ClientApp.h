@@ -58,12 +58,41 @@ private:
     int port;
     std::string path;
     std::string host;
-    /* The name the server is addressed by: the Host header of the upgrade request and the
-     * TLS SNI. It is the URL's host unless connect() was given a hostname, which lets the
-     * caller resolve the name itself (off the loop) and dial the address while the server
-     * still sees the name it serves. */
+    /* The name the server is addressed by, derived by connect() from the URL's host or from
+     * the hostname argument, which lets the caller resolve the name itself (off the loop) and
+     * dial the address while the server still sees the name it serves. The Host header carries
+     * the port when it is not the scheme's default; the TLS SNI is the bare name (RFC 6066
+     * allows no port and no address literal there). */
     std::string hostHeader;
+    std::string sniHost;
     char *source_host;
+
+    /* The request line and the Host header are written verbatim, so a CR, LF or other control
+     * character in the URL or the hostname would let a caller forge headers */
+    static bool hasControlChars(std::string_view s) {
+        for (unsigned char c : s) {
+            if (c < 0x20 || c == 0x7f) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /* An IPv4 (digits and dots) or IPv6 (contains ':') literal: never sent as SNI */
+    static bool isAddressLiteral(std::string_view s) {
+        if (s.find(':') != std::string_view::npos) {
+            return true;
+        }
+        if (s.empty()) {
+            return false;
+        }
+        for (unsigned char c : s) {
+            if (!(c == '.' || (c >= '0' && c <= '9'))) {
+                return false;
+            }
+        }
+        return true;
+    }
     std::unordered_map<std::string, std::string> customHeaders;
 
 public:
@@ -353,8 +382,11 @@ public:
     /* A numeric host connects synchronously; a name is resolved by uSockets on a resolver thread
      * (the loop is never blocked) and the connect is finished when the lookup completes, so a
      * failed lookup arrives through connectError with a code in the CONNECT_ERROR_RESOLVE_BASE
-     * range. 'hostname', when given, is sent as the Host header and the SNI in place of the URL's
-     * host, for callers that dial an address they resolved themselves. */
+     * range. 'hostname', when given, replaces the URL's host in the Host header and the SNI, for
+     * callers that dial an address they resolved themselves: "name" takes the URL's port in the
+     * Host header when it is not the scheme's default, "name:port" is sent as given. Throws
+     * std::runtime_error on a scheme/SSL mismatch, an invalid port, or a control character in
+     * the URL or the hostname. */
     TemplatedClientApp &&connect(std::string url, std::string hostname = "") {
         /* Starting a new connection cycle: re-arm the handshake. 'handshakeSent'
          * dedups the handshake among the filter lambdas registered by ws() calls
@@ -365,6 +397,10 @@ public:
          * a normal WebSocket close leaves the flag set and, without this reset,
          * any further connect() would establish TCP but never send a handshake. */
         handshakeSent = false;
+
+        if (hasControlChars(url) || hasControlChars(hostname)) {
+            throw std::runtime_error("WebSocket client URL and hostname must not contain control characters.");
+        }
 
         /* Parses the URL setting "host", "path" and "port" */
 
@@ -405,11 +441,35 @@ public:
         size_t colon = hostPort.find(':');
         if (colon != std::string::npos) {
             host = hostPort.substr(0, colon);
-            port = std::stoi(hostPort.substr(colon + 1));
+            try {
+                port = std::stoi(hostPort.substr(colon + 1));
+            } catch (const std::exception &) {
+                port = 0;
+            }
+            if (port <= 0 || port > 65535) {
+                throw std::runtime_error("WebSocket client URL has an invalid port.");
+            }
         } else {
             host = hostPort;
         }
-        hostHeader = hostname.empty() ? host : hostname;
+
+        /* Host header and SNI. A hostname given as "name:port" is sent as the Host header
+         * verbatim (its port may differ from the dialed one, e.g. behind a forwarder); a bare
+         * name, like the URL's host, takes the dialed port when that is not the default. */
+        size_t hostnameColon = hostname.find(':');
+        if (!hostname.empty() && hostnameColon != std::string::npos && hostnameColon == hostname.rfind(':')) {
+            sniHost = hostname.substr(0, hostnameColon);
+            hostHeader = hostname;
+        } else {
+            sniHost = hostname.empty() ? host : hostname;
+            hostHeader = sniHost;
+            if (port != (SSL ? 443 : 80)) {
+                hostHeader += ":" + std::to_string(port);
+            }
+        }
+
+        /* Set client side SNI (It will do nothing if not 'SSL'); an address literal clears it */
+        us_socket_context_set_host_name(SSL, (struct us_socket_context_t *) httpContext, isAddressLiteral(sniHost) ? nullptr : sniHost.c_str());
 
         /* Connect the socket. uSockets returns null only when the attempt could not be started
          * (a numeric host whose socket/bind/connect failed at once, or no resolver thread) and
@@ -455,9 +515,6 @@ public:
 
             return std::move(static_cast<TemplatedClientApp &&>(*this));
         }
-
-        /* Set client side SNI (It will do nothing if not 'SSL') */
-        us_socket_context_set_host_name(SSL, (struct us_socket_context_t *) httpContext, hostHeader.c_str());
 
         return std::move(static_cast<TemplatedClientApp &&>(*this));
     }
