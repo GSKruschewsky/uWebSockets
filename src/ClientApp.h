@@ -21,7 +21,9 @@ namespace uWS {
 /* connectError codes. A positive code is the platform's socket error (errno / WSAGetLastError:
  * ECONNREFUSED, ENETUNREACH, ETIMEDOUT ...). A code at or below CONNECT_ERROR_RESOLVE_BASE is a failed
  * name lookup carrying the getaddrinfo error: connectErrorResolveCode(code) gives the EAI_* value
- * (EAI_NONAME, EAI_AGAIN ...). 0 means the attempt could not be started and its cause could not be read. */
+ * (EAI_NONAME, EAI_AGAIN ...). An attempt that could not be started reports the platform error of the
+ * socket/bind/connect call or of the resolver thread (ENOMEM, EAGAIN); 0 is never produced by the
+ * library itself. */
 static constexpr int CONNECT_ERROR_RESOLVE_BASE = LIBUS_CONNECT_ERROR_RESOLVE_BASE;
 static inline bool isConnectErrorResolve(int code) { return LIBUS_CONNECT_ERROR_IS_RESOLVE(code); }
 static inline int connectErrorResolveCode(int code) { return LIBUS_CONNECT_ERROR_RESOLVE_CODE(code); }
@@ -170,9 +172,10 @@ public:
          * any of open/close/rejectedHandshake could apply. A positive code is the platform's
          * socket error (errno / WSAGetLastError, e.g. ECONNREFUSED); a code at or below
          * CONNECT_ERROR_RESOLVE_BASE (isConnectErrorResolve) is a failed lookup whose EAI_*
-         * value is connectErrorResolveCode(code); 0 means the attempt could not be started
-         * and its cause could not be read. Without this handler the same failures are
-         * reported through rejectedHandshake with an empty status. */
+         * value is connectErrorResolveCode(code); an attempt that could not be started
+         * carries the error of the call that stopped it (EADDRNOTAVAIL, ENOMEM ...). Without
+         * this handler the same failures are reported through rejectedHandshake with an
+         * empty status. */
         MoveOnlyFunction<void(int)> connectError = nullptr;
     };
 
@@ -470,22 +473,11 @@ public:
 
         /* Connect the socket. uSockets returns null only when the attempt could not be started
          * (a numeric host whose socket/bind/connect failed at once, or no resolver thread) and
-         * discards the error itself, so the platform error is read back here right after the
-         * call, with the slot cleared first so a stale value is not mistaken for this failure.
-         * Best effort: 0 when nothing was left behind. */
-#ifdef _WIN32
-        WSASetLastError(0);
-#else
-        errno = 0;
-#endif
+         * keeps the error that stopped it on the context. */
         us_socket_t *connectSocket = httpContext->connect(host.c_str(), port, 0, this->source_host);
 
         if (!connectSocket) {
-#ifdef _WIN32
-            int connectError = WSAGetLastError();
-#else
-            int connectError = errno;
-#endif
+            int connectError = us_socket_context_last_connect_error(SSL, (struct us_socket_context_t *) httpContext);
             /* No socket exists to report the error through. Deliver the callback from a
              * one-shot timer rather than synchronously or via Loop::defer: the caller
              * observes every connect failure asynchronously and cannot recurse through
@@ -495,7 +487,7 @@ public:
              * builder chain. */
             struct ConnectErrorTimerData { HttpContext<SSL> *httpContext; int code; };
             struct us_timer_t *connectErrorTimer = us_create_timer((struct us_loop_t *) Loop::get(), 0, sizeof(ConnectErrorTimerData));
-            *(ConnectErrorTimerData *) us_timer_ext(connectErrorTimer) = { httpContext, connectError < 0 ? 0 : connectError };
+            *(ConnectErrorTimerData *) us_timer_ext(connectErrorTimer) = { httpContext, connectError };
             us_timer_set(connectErrorTimer, [](struct us_timer_t *t) {
                 ConnectErrorTimerData data = *(ConnectErrorTimerData *) us_timer_ext(t);
                 HttpContext<SSL> *localHttpContext = data.httpContext;
