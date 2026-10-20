@@ -91,9 +91,22 @@ private:
         }
         return true;
     }
-    std::unordered_map<std::string, std::string> customHeaders;
-
 public:
+
+    /* The app is a handle: everything the callbacks need lives in the contexts, never in the
+     * app object, so an app may be moved (e.g. held in a variable after a chained ws() on a
+     * temporary) while attempts are in flight. Copying would duplicate the context handle
+     * and the attempt counter, so it is not allowed. */
+    TemplatedClientApp(TemplatedClientApp &&other) noexcept :
+        httpContext(other.httpContext),
+        lastAttempt(other.lastAttempt),
+        source_host(other.source_host),
+        connectTimeout(other.connectTimeout) {
+        other.httpContext = nullptr;
+    }
+    TemplatedClientApp(const TemplatedClientApp &) = delete;
+    TemplatedClientApp &operator=(const TemplatedClientApp &) = delete;
+    TemplatedClientApp &operator=(TemplatedClientApp &&) = delete;
 
     TemplatedClientApp(ClientSocketContextOptions options = {}) {
         httpContext = HttpContext<SSL>::create(Loop::get(), options);
@@ -278,7 +291,7 @@ public:
         if (behavior.rxTimestamps) {
             us_socket_context_set_rx_timestamps(SSL, (struct us_socket_context_t *) httpContext, 1);
         }
-        this->customHeaders = std::move(behavior.customHeaders);
+        httpContext->getSocketContextData()->clientCustomHeaders = std::move(behavior.customHeaders);
         this->source_host = behavior.localAddress;
         this->connectTimeout = behavior.connectTimeout;
 
@@ -291,8 +304,10 @@ public:
          * the initial websocket handshake once the server connection is open. 
          * Every ws() call registers one such filter and all of them fire per
          * socket open: the per-socket flag lets exactly one send the handshake.
+         * The filter captures the context, not the app: the app object may have
+         * been moved by the time a socket opens (see the move constructor).
          */
-        httpContext->filter([ this ](HttpResponse<SSL> *res, int event) {
+        httpContext->filter([httpContext = this->httpContext](HttpResponse<SSL> *res, int event) {
             if (event == 1) {
                 /* Connection established */
                 HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, (us_socket_t *) res);
@@ -300,7 +315,7 @@ public:
                     httpResponseData->clientHandshakeSent = true;
 
                     /* This socket's attempt, parked by connect() until now */
-                    HttpContextData<SSL> *httpContextData = this->httpContext->getSocketContextData();
+                    HttpContextData<SSL> *httpContextData = httpContext->getSocketContextData();
                     auto it = httpContextData->clientAttempts.find((us_socket_t *) res);
                     if (it == httpContextData->clientAttempts.end()) {
                         /* Not one of ours (cannot happen for a socket connect() returned): no
@@ -322,7 +337,7 @@ public:
                         attempt.hostHeader,
                         attempt.path,
                         httpResponseData->clientWebSocketKey,
-                        this->customHeaders
+                        httpContextData->clientCustomHeaders
                     );
                 }
             }
@@ -370,7 +385,7 @@ public:
         }, true);
         
         /* Creates a "fake" route to handle the server initial handshake NOT successful response. */
-        httpContext->onHttp("HTTP/1.1", "/*", [this, webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
+        httpContext->onHttp("HTTP/1.1", "/*", [httpContext = this->httpContext, webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
             /* This is the one terminal callback for this attempt; the close fallback
              * below (triggered by us_socket_close) must stay quiet */
             HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, (us_socket_t *) res);
@@ -382,7 +397,7 @@ public:
                  * views into this socket's parser buffers and die with it on close */
                 std::string_view status = req->getFullUrl();
                 std::string_view statusText = req->getHeader(status);
-                HttpContextData<SSL> *httpContextData = this->httpContext->getSocketContextData();
+                HttpContextData<SSL> *httpContextData = httpContext->getSocketContextData();
                 std::string_view body {
                     httpContextData->reqRemaningData,
                     httpContextData->reqRemaningDataLen

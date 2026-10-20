@@ -1,5 +1,7 @@
 // WebSocket client example: connects, prints the first message and closes.
 // Every attempt ends in exactly one of open, rejectedHandshake or connectError.
+// The app is a movable handle: holding it in a variable after a chained ws() on a
+// temporary (as below) is supported, the callbacks never reference the app object.
 
 #include "ClientApp.h"
 #include <iostream>

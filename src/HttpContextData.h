@@ -64,6 +64,12 @@ private:
     };
     std::unordered_map<us_socket_t *, ClientAttempt> clientAttempts;
 
+    /* Client-side only: the extra headers every handshake of this context sends (set by
+     * ws(), read by the handshake filter). Kept here rather than on the app object so the
+     * filter never references the app: the app may be moved (held in a variable after a
+     * chained ws() on a temporary) while the context and its callbacks live on. */
+    std::unordered_map<std::string, std::string> clientCustomHeaders;
+
     /* Forgets the attempt of a socket that will never open and returns its id (0 if unknown) */
     unsigned int dropClientAttempt(us_socket_t *s) {
         auto it = clientAttempts.find(s);
