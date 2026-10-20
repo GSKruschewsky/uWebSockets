@@ -5,6 +5,7 @@
 #include <charconv>
 #include <string_view>
 #include <sstream>
+#include <cerrno>
 
 /* An app is a convenience wrapper of some of the most used fuctionalities and allows a
  * builder-pattern kind of init. Apps operate on the implicit thread local Loop */
@@ -16,6 +17,16 @@
 #include "PerMessageDeflate.h"
 
 namespace uWS {
+
+/* connectError codes. A positive code is the platform's socket error (errno / WSAGetLastError:
+ * ECONNREFUSED, ENETUNREACH, ETIMEDOUT ...). A code at or below CONNECT_ERROR_RESOLVE_BASE is a failed
+ * name lookup carrying the getaddrinfo error: connectErrorResolveCode(code) gives the EAI_* value
+ * (EAI_NONAME, EAI_AGAIN ...). An attempt that could not be started reports the platform error of the
+ * socket/bind/connect call or of the resolver thread (ENOMEM, EAGAIN); 0 is never produced by the
+ * library itself. */
+static constexpr int CONNECT_ERROR_RESOLVE_BASE = LIBUS_CONNECT_ERROR_RESOLVE_BASE;
+static inline bool isConnectErrorResolve(int code) { return LIBUS_CONNECT_ERROR_IS_RESOLVE(code); }
+static inline int connectErrorResolveCode(int code) { return LIBUS_CONNECT_ERROR_RESOLVE_CODE(code); }
 
     /* This one matches us_socket_context_options_t but has default values */
     struct ClientSocketContextOptions {
@@ -42,17 +53,60 @@ struct TemplatedClientApp {
 private:
     /* The app always owns at least one http context, but creates websocket contexts on demand */
     HttpContext<SSL> *httpContext;
-    
-    char webSocketKey[24];
-    bool handshakeSent = false;
 
-    int port;
-    std::string path;
-    std::string host;
+    /* Attempts are numbered per app from 1; connect() returns the number and every callback
+     * about that attempt carries it, since attempts may overlap (a re-dial while an earlier
+     * one is still resolving, connecting or awaiting its handshake response). What an attempt
+     * sends - Host header, path, SNI - is stored per socket in the HTTP context data until the
+     * socket opens, never on the app. */
+    unsigned int lastAttempt = 0;
     char *source_host;
-    std::unordered_map<std::string, std::string> customHeaders;
+    /* Seconds a connect attempt (name lookup + TCP connect) may take before it fails with
+     * connectError(ETIMEDOUT); 0 leaves it to the kernel's own connect timeout */
+    unsigned short connectTimeout = 10;
 
+    /* The request line and the Host header are written verbatim, so a CR, LF or other control
+     * character in the URL or the hostname would let a caller forge headers */
+    static bool hasControlChars(std::string_view s) {
+        for (unsigned char c : s) {
+            if (c < 0x20 || c == 0x7f) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /* An IPv4 (digits and dots) or IPv6 (contains ':') literal: never sent as SNI */
+    static bool isAddressLiteral(std::string_view s) {
+        if (s.find(':') != std::string_view::npos) {
+            return true;
+        }
+        if (s.empty()) {
+            return false;
+        }
+        for (unsigned char c : s) {
+            if (!(c == '.' || (c >= '0' && c <= '9'))) {
+                return false;
+            }
+        }
+        return true;
+    }
 public:
+
+    /* The app is a handle: everything the callbacks need lives in the contexts, never in the
+     * app object, so an app may be moved (e.g. held in a variable after a chained ws() on a
+     * temporary) while attempts are in flight. Copying would duplicate the context handle
+     * and the attempt counter, so it is not allowed. */
+    TemplatedClientApp(TemplatedClientApp &&other) noexcept :
+        httpContext(other.httpContext),
+        lastAttempt(other.lastAttempt),
+        source_host(other.source_host),
+        connectTimeout(other.connectTimeout) {
+        other.httpContext = nullptr;
+    }
+    TemplatedClientApp(const TemplatedClientApp &) = delete;
+    TemplatedClientApp &operator=(const TemplatedClientApp &) = delete;
+    TemplatedClientApp &operator=(TemplatedClientApp &&) = delete;
 
     TemplatedClientApp(ClientSocketContextOptions options = {}) {
         httpContext = HttpContext<SSL>::create(Loop::get(), options);
@@ -65,12 +119,13 @@ public:
              * only the context may be touched. */
             us_socket_context_on_connect_error(SSL, (struct us_socket_context_t *) httpContext, [](struct us_socket_t *s, int code) {
                 HttpContextData<SSL> *httpContextData = HttpContext<SSL>::getSocketContextDataS(s);
+                unsigned int attempt = httpContextData->dropClientAttempt(s);
                 if (httpContextData->clientConnectErrorHandler) {
-                    httpContextData->clientConnectErrorHandler(code);
+                    httpContextData->clientConnectErrorHandler(code, attempt);
                 } else if (httpContextData->clientHandshakeAbortedHandler) {
                     /* No connectError registered: report through rejectedHandshake so the
                      * failure is never silent */
-                    httpContextData->clientHandshakeAbortedHandler(std::string_view("", 0));
+                    httpContextData->clientHandshakeAbortedHandler(std::string_view("", 0), attempt);
                 }
                 return s;
             });
@@ -107,6 +162,12 @@ public:
         char *localAddress = nullptr;
         /* Maximum socket lifetime in minutes before forced closure (defaults to disabled) */
         unsigned short maxLifetime = 0;
+        /* Seconds from connect() until the TCP connection must be established (the name lookup
+         * included); when it is not, the attempt fails with connectError(ETIMEDOUT). The HTTP
+         * idle timeout then covers the handshake response. 0 disables it, leaving a resolving
+         * or connecting socket to the resolver's and the kernel's own limits. The uSockets
+         * timer has a 4-second granularity. */
+        unsigned short connectTimeout = 10;
         MoveOnlyFunction<void(HttpResponse<SSL> *, HttpRequest *, struct us_socket_context_t *)> upgrade = nullptr;
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *)> open = nullptr;
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view, OpCode)> message = nullptr;
@@ -116,11 +177,19 @@ public:
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view)> pong = nullptr;
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, std::string_view, int, int)> subscription = nullptr;
         MoveOnlyFunction<void(WebSocket<SSL, false, UserData> *, int, std::string_view)> close = nullptr;
-        MoveOnlyFunction<void(std::string_view, std::string_view, std::string_view, HttpRequest *)> rejectedHandshake = nullptr;
-        /* Called when the TCP connection itself fails (refused, unreachable, resolution
-         * failure) — before any of open/close/rejectedHandshake could apply. The code is
-         * the platform errno (e.g. ECONNREFUSED), or 0 when no attempt could be made. */
-        MoveOnlyFunction<void(int)> connectError = nullptr;
+        /* Called when the server answered the handshake with anything but 101, or when the
+         * attempt died without a parsed response (empty status; body = raw bytes, if any).
+         * The last argument is the attempt number connect() returned. */
+        MoveOnlyFunction<void(std::string_view, std::string_view, std::string_view, HttpRequest *, unsigned int)> rejectedHandshake = nullptr;
+        /* Called when the connection itself fails (name lookup, refused, unreachable, connect
+         * timeout) before any of open/close/rejectedHandshake could apply. A positive code is
+         * the platform's socket error (errno / WSAGetLastError, e.g. ECONNREFUSED, ETIMEDOUT);
+         * a code at or below CONNECT_ERROR_RESOLVE_BASE (isConnectErrorResolve) is a failed
+         * lookup whose EAI_* value is connectErrorResolveCode(code); an attempt that could not
+         * be started carries the error of the call that stopped it (EADDRNOTAVAIL, ENOMEM ...).
+         * The second argument is the attempt number connect() returned. Without this handler
+         * the same failures are reported through rejectedHandshake with an empty status. */
+        MoveOnlyFunction<void(int, unsigned int)> connectError = nullptr;
     };
 
     /* Returns the SSL_CTX of this app, or nullptr. */
@@ -195,12 +264,12 @@ public:
          * connectError registered, reset, timed out, or an unparseable response): route
          * them to rejectedHandshake so every failed connect reaches the app. Empty
          * status/text mean "no HTTP response"; body carries any raw bytes received. */
-        httpContext->getSocketContextData()->clientHandshakeAbortedHandler = [webSocketContext](std::string_view rawResponse) {
+        httpContext->getSocketContextData()->clientHandshakeAbortedHandler = [webSocketContext](std::string_view rawResponse, unsigned int attempt) {
             WebSocketContextData<SSL, false, UserData> *webSocketContextData = (WebSocketContextData<SSL, false, UserData> *) us_socket_context_ext(SSL, (us_socket_context_t *) webSocketContext);
             if (webSocketContextData->rejectedHandshakeHandler) {
                 /* There is no request to expose; hand out an inert empty one */
                 HttpRequest emptyRequest;
-                webSocketContextData->rejectedHandshakeHandler(std::string_view("", 0), std::string_view("", 0), rawResponse, &emptyRequest);
+                webSocketContextData->rejectedHandshakeHandler(std::string_view("", 0), std::string_view("", 0), rawResponse, &emptyRequest, attempt);
             }
         };
 
@@ -222,8 +291,9 @@ public:
         if (behavior.rxTimestamps) {
             us_socket_context_set_rx_timestamps(SSL, (struct us_socket_context_t *) httpContext, 1);
         }
-        this->customHeaders = std::move(behavior.customHeaders);
+        httpContext->getSocketContextData()->clientCustomHeaders = std::move(behavior.customHeaders);
         this->source_host = behavior.localAddress;
+        this->connectTimeout = behavior.connectTimeout;
 
         /* Calculate idleTimeoutCompnents */
         webSocketContext->getExt()->calculateIdleTimeoutCompnents(behavior.idleTimeout);
@@ -232,33 +302,49 @@ public:
          * Filter is called only when the connection opens (event = 1) or 
          * closes (event = -1) of the socket. So we set a filter to send 
          * the initial websocket handshake once the server connection is open. 
+         * Every ws() call registers one such filter and all of them fire per
+         * socket open: the per-socket flag lets exactly one send the handshake.
+         * The filter captures the context, not the app: the app object may have
+         * been moved by the time a socket opens (see the move constructor).
          */
-        httpContext->filter([ this ](HttpResponse<SSL> *res, int event) {
+        httpContext->filter([httpContext = this->httpContext](HttpResponse<SSL> *res, int event) {
             if (event == 1) {
                 /* Connection established */
-                if (!this->handshakeSent) {
-                    this->handshakeSent = true;
+                HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, (us_socket_t *) res);
+                if (!httpResponseData->clientHandshakeSent) {
+                    httpResponseData->clientHandshakeSent = true;
 
-                    /* Writes a new key to "this->webSocketKey" */
-                    WebSocketHandshake::generateKey(this->webSocketKey);
+                    /* This socket's attempt, parked by connect() until now */
+                    HttpContextData<SSL> *httpContextData = httpContext->getSocketContextData();
+                    auto it = httpContextData->clientAttempts.find((us_socket_t *) res);
+                    if (it == httpContextData->clientAttempts.end()) {
+                        /* Not one of ours (cannot happen for a socket connect() returned): no
+                         * handshake, the HTTP idle timeout ends it and the close path reports it */
+                        return;
+                    }
+                    typename HttpContextData<SSL>::ClientAttempt attempt = std::move(it->second);
+                    httpContextData->clientAttempts.erase(it);
+                    httpResponseData->clientAttempt = attempt.id;
+
+                    /* This socket's own SNI, before the TLS handshake starts with the first
+                     * write (no-op without SSL); an address literal sends no name */
+                    us_socket_set_host_name(SSL, (us_socket_t *) res, attempt.sniHost.empty() ? nullptr : attempt.sniHost.c_str());
+
+                    /* Writes a new key for this socket */
+                    WebSocketHandshake::generateKey(httpResponseData->clientWebSocketKey);
 
                     res->writeInitHandshake(
-                        this->host, 
-                        this->path, 
-                        this->webSocketKey,
-                        this->customHeaders
+                        attempt.hostHeader,
+                        attempt.path,
+                        httpResponseData->clientWebSocketKey,
+                        httpContextData->clientCustomHeaders
                     );
-                }
-            } else if (event == -1) {
-                /* Connection closed */
-                if (this->handshakeSent) {
-                    this->handshakeSent = false;
                 }
             }
         });
         
         /* Creates a "fake" route to handle the server initial handshake successful response. */
-        httpContext->onHttp("HTTP/1.1", "101", [this, webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
+        httpContext->onHttp("HTTP/1.1", "101", [webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
             
             /* If we have this header set, it's a websocket handshake response */
             std::string_view secWebSocketAccept = req->getHeader("sec-websocket-accept");
@@ -268,8 +354,10 @@ public:
                 return;
             }
             
+            /* The accept value must answer the key this very socket sent */
+            HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, (us_socket_t *) res);
             char expectedSecWebSocketAccept[29] = {};
-            WebSocketHandshake::generate(this->webSocketKey, expectedSecWebSocketAccept);
+            WebSocketHandshake::generate(httpResponseData->clientWebSocketKey, expectedSecWebSocketAccept);
             if (memcmp(secWebSocketAccept.data(), expectedSecWebSocketAccept, 28) != 0) {
                 /* Tell the router that we did not handle this request */
                 req->setYield(true);
@@ -297,7 +385,7 @@ public:
         }, true);
         
         /* Creates a "fake" route to handle the server initial handshake NOT successful response. */
-        httpContext->onHttp("HTTP/1.1", "/*", [this, webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
+        httpContext->onHttp("HTTP/1.1", "/*", [httpContext = this->httpContext, webSocketContext, behavior = std::move(behavior)](HttpResponse<SSL> *res, HttpRequest *req) mutable {
             /* This is the one terminal callback for this attempt; the close fallback
              * below (triggered by us_socket_close) must stay quiet */
             HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, (us_socket_t *) res);
@@ -309,7 +397,7 @@ public:
                  * views into this socket's parser buffers and die with it on close */
                 std::string_view status = req->getFullUrl();
                 std::string_view statusText = req->getHeader(status);
-                HttpContextData<SSL> *httpContextData = this->httpContext->getSocketContextData();
+                HttpContextData<SSL> *httpContextData = httpContext->getSocketContextData();
                 std::string_view body {
                     httpContextData->reqRemaningData,
                     httpContextData->reqRemaningDataLen
@@ -318,7 +406,8 @@ public:
                     status,
                     statusText,
                     body,
-                    req
+                    req,
+                    httpResponseData->clientAttempt
                 );
             }
 
@@ -332,16 +421,23 @@ public:
         return std::move(static_cast<TemplatedClientApp &&>(*this));
     }
 
-    TemplatedClientApp &&connect(std::string url) {
-        /* Starting a new connection cycle: re-arm the handshake. 'handshakeSent'
-         * dedups the handshake among the filter lambdas registered by ws() calls
-         * (all of them fire per socket open), so it must be armed once per
-         * connection attempt. The filter's own reset (event == -1) only covers
-         * sockets closed while still owned by the HTTP context — after a
-         * successful 101 upgrade the socket belongs to the WebSocket context, so
-         * a normal WebSocket close leaves the flag set and, without this reset,
-         * any further connect() would establish TCP but never send a handshake. */
-        handshakeSent = false;
+    /* A numeric host connects synchronously; a name is resolved by uSockets on a resolver thread
+     * (the loop is never blocked) and the connect is finished when the lookup completes, so a
+     * failed lookup arrives through connectError with a code in the CONNECT_ERROR_RESOLVE_BASE
+     * range. 'hostname', when given, replaces the URL's host in the Host header and the SNI, for
+     * callers that dial an address they resolved themselves: "name" takes the URL's port in the
+     * Host header when it is not the scheme's default, "name:port" is sent as given. Throws
+     * std::runtime_error on a scheme/SSL mismatch, an invalid port, or a control character in
+     * the URL or the hostname. Returns the attempt number (from 1, per app) that the attempt's
+     * open (WebSocket::getClientAttempt), rejectedHandshake or connectError will carry; attempts
+     * may overlap and each sends its own Host header, path and SNI. */
+    unsigned int connect(std::string url, std::string hostname = "") {
+        int port;
+        std::string host, path, hostHeader, sniHost;
+
+        if (hasControlChars(url) || hasControlChars(hostname)) {
+            throw std::runtime_error("WebSocket client URL and hostname must not contain control characters.");
+        }
 
         /* Parses the URL setting "host", "path" and "port" */
 
@@ -382,44 +478,86 @@ public:
         size_t colon = hostPort.find(':');
         if (colon != std::string::npos) {
             host = hostPort.substr(0, colon);
-            port = std::stoi(hostPort.substr(colon + 1));
+            try {
+                port = std::stoi(hostPort.substr(colon + 1));
+            } catch (const std::exception &) {
+                port = 0;
+            }
+            if (port <= 0 || port > 65535) {
+                throw std::runtime_error("WebSocket client URL has an invalid port.");
+            }
         } else {
             host = hostPort;
         }
 
-        /* Connect the socket */
+        /* Host header and SNI. A hostname given as "name:port" is sent as the Host header
+         * verbatim (its port may differ from the dialed one, e.g. behind a forwarder); a bare
+         * name, like the URL's host, takes the dialed port when that is not the default. */
+        size_t hostnameColon = hostname.find(':');
+        if (!hostname.empty() && hostnameColon != std::string::npos && hostnameColon == hostname.rfind(':')) {
+            sniHost = hostname.substr(0, hostnameColon);
+            hostHeader = hostname;
+        } else {
+            sniHost = hostname.empty() ? host : hostname;
+            hostHeader = sniHost;
+            if (port != (SSL ? 443 : 80)) {
+                hostHeader += ":" + std::to_string(port);
+            }
+        }
+
+        /* The SNI is set per socket when it opens; an address literal sends none */
+        if (isAddressLiteral(sniHost)) {
+            sniHost.clear();
+        }
+
+        /* Everything checked: this is an attempt (a call that threw above started none) */
+        unsigned int attempt = ++lastAttempt;
+
+        /* Connect the socket. uSockets returns null only when the attempt could not be started
+         * (a numeric host whose socket/bind/connect failed at once, or no resolver thread) and
+         * keeps the error that stopped it on the context. */
         us_socket_t *connectSocket = httpContext->connect(host.c_str(), port, 0, this->source_host);
 
         if (!connectSocket) {
-            /* The connect failed synchronously (name resolution or socket creation) so
-             * no socket exists to report the error through. Deliver the callback from a
+            int connectError = us_socket_context_last_connect_error(SSL, (struct us_socket_context_t *) httpContext);
+            /* No socket exists to report the error through. Deliver the callback from a
              * one-shot timer rather than synchronously or via Loop::defer: the caller
              * observes every connect failure asynchronously and cannot recurse through
              * a retrying handler, while the timer (unlike a deferred lambda) is a poll
-             * that keeps the loop alive until delivery. The context pointer is carried
-             * in the timer ext since the app itself may be moved by the builder chain. */
-            struct us_timer_t *connectErrorTimer = us_create_timer((struct us_loop_t *) Loop::get(), 0, sizeof(HttpContext<SSL> *));
-            *(HttpContext<SSL> **) us_timer_ext(connectErrorTimer) = httpContext;
+             * that keeps the loop alive until delivery. The context pointer and the error
+             * are carried in the timer ext since the app itself may be moved by the
+             * builder chain. */
+            struct ConnectErrorTimerData { HttpContext<SSL> *httpContext; int code; unsigned int attempt; };
+            struct us_timer_t *connectErrorTimer = us_create_timer((struct us_loop_t *) Loop::get(), 0, sizeof(ConnectErrorTimerData));
+            *(ConnectErrorTimerData *) us_timer_ext(connectErrorTimer) = { httpContext, connectError, attempt };
             us_timer_set(connectErrorTimer, [](struct us_timer_t *t) {
-                HttpContext<SSL> *localHttpContext = *(HttpContext<SSL> **) us_timer_ext(t);
+                ConnectErrorTimerData data = *(ConnectErrorTimerData *) us_timer_ext(t);
+                HttpContext<SSL> *localHttpContext = data.httpContext;
                 us_timer_close(t);
 
                 HttpContextData<SSL> *httpContextData = localHttpContext->getSocketContextData();
                 if (httpContextData->clientConnectErrorHandler) {
-                    httpContextData->clientConnectErrorHandler(0);
+                    httpContextData->clientConnectErrorHandler(data.code, data.attempt);
                 } else if (httpContextData->clientHandshakeAbortedHandler) {
                     /* No connectError registered: report through rejectedHandshake */
-                    httpContextData->clientHandshakeAbortedHandler(std::string_view("", 0));
+                    httpContextData->clientHandshakeAbortedHandler(std::string_view("", 0), data.attempt);
                 }
             }, 1, 0);
 
-            return std::move(static_cast<TemplatedClientApp &&>(*this));
+            return attempt;
         }
 
-        /* Set client side SNI (It will do nothing if not 'SSL') */
-        us_socket_context_set_host_name(SSL, (struct us_socket_context_t *) httpContext, host.c_str());
+        /* Park what this socket must send once it opens */
+        httpContext->getSocketContextData()->clientAttempts[connectSocket] = { attempt, std::move(hostHeader), std::move(path), std::move(sniHost) };
 
-        return std::move(static_cast<TemplatedClientApp &&>(*this));
+        /* The attempt is live: bound the lookup and the TCP connect together. on_open re-arms
+         * the socket with the HTTP idle timeout; a socket that never opens is reported and
+         * discarded by the HTTP context's timeout handler. */
+        if (connectTimeout) {
+            us_socket_timeout(SSL, connectSocket, connectTimeout);
+        }
+
+        return attempt;
     }
 
     TemplatedClientApp &&run() {

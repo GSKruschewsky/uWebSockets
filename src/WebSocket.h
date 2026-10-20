@@ -54,6 +54,11 @@ public:
         return (USERDATA *) (webSocketData + 1);
     }
 
+    /* Client only: the number connect() returned for the attempt that opened this socket (0 on a server) */
+    unsigned int getClientAttempt() {
+        return ((WebSocketData *) us_socket_ext(SSL, (us_socket_t *) this))->clientAttempt;
+    }
+
     /* See AsyncSocket */
     using Super::getBufferedAmount;
     using Super::getRemoteAddress;

@@ -33,6 +33,7 @@ struct WebSocketData : AsyncSocketData<false>, WebSocketState<true> {
     template <bool, bool, typename> friend struct WebSocketContextData;
     template <bool, bool, typename> friend struct WebSocket;
     template <bool> friend struct HttpContext;
+    template <bool> friend struct HttpResponse;
 private:
     std::string fragmentBuffer;
     unsigned int controlTipLength = 0;
@@ -51,6 +52,9 @@ private:
 
     /* We could be a subscriber */
     Subscriber *subscriber = nullptr;
+
+    /* Client only: the connect() attempt that produced this socket (0 on the server) */
+    unsigned int clientAttempt = 0;
 public:
     WebSocketData(bool perMessageDeflate, CompressOptions compressOptions, BackPressure &&backpressure) : AsyncSocketData<false>(std::move(backpressure)), WebSocketState<true>() {
         compressionStatus = perMessageDeflate ? ENABLED : DISABLED;
